@@ -124,7 +124,6 @@ Important source files:
 - `src/seek_camera_thread.*` — capture lifecycle and UI dispatch.
 - `src/thermal_palette.*` — shared 256-color lookup table.
 - `src/main_window.*` — live viewer, temperature scale, and screenshots.
-- `REVTMP.md` — reverse-engineering evidence and recovered thermography details.
 
 ## Contributing
 

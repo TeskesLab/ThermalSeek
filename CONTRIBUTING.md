@@ -114,8 +114,7 @@ A complete camera contribution normally includes:
 4. Conversion to the `ThermalFrame` contract.
 5. CMake source and dependency updates.
 6. The new model and USB ID in the README support table.
-7. Protocol and calibration evidence in `REVTMP.md` or an equivalent tracked
-   technical document.
+7. Protocol and calibration evidence in a tracked technical document.
 8. Linux permission guidance when the model uses a new USB ID.
 
 New dependencies require a concrete need and a license compatible with an MIT
