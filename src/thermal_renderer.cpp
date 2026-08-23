@@ -13,10 +13,11 @@ QPoint detectorPointToImage(std::size_t detectorX, std::size_t detectorY,
                 static_cast<int>(detectorWidth - 1 - detectorX));
 }
 
-bool hasValidDimensions(const ThermalFrame& frame) noexcept {
+bool hasValidDimensions(const ThermalFrame &frame) noexcept {
   if (frame.width == 0 || frame.height == 0 ||
       frame.width > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-      frame.height > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      frame.height >
+          static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return false;
   }
   if (frame.width > std::numeric_limits<std::size_t>::max() / frame.height) {
@@ -24,38 +25,46 @@ bool hasValidDimensions(const ThermalFrame& frame) noexcept {
   }
   return frame.celsius.size() == frame.width * frame.height;
 }
-}  // namespace
+} // namespace
 
-bool isValidTemperatureRange(const TemperatureRange& range) noexcept {
+bool isValidTemperatureRange(const TemperatureRange &range) noexcept {
   return std::isfinite(range.minimumCelsius) &&
          std::isfinite(range.maximumCelsius) &&
          range.maximumCelsius > range.minimumCelsius;
 }
 
-ThermalRenderResult renderThermalFrame(
-    std::shared_ptr<const ThermalFrame> apparentFrame,
-    const ThermalRenderSettings& settings,
-    std::shared_ptr<ThermalFrame> correctionBuffer) {
+ThermalRenderResult
+renderThermalFrame(std::shared_ptr<const ThermalFrame> cameraFrame,
+                   std::shared_ptr<const ThermalFrame> apparentFrame,
+                   const ThermalRenderSettings &settings,
+                   std::shared_ptr<ThermalFrame> radiometricCorrectionBuffer) {
   ThermalRenderResult result;
+  result.cameraFrame = std::move(cameraFrame);
   result.apparentFrame = std::move(apparentFrame);
   result.radiometricSettings = settings.radiometry;
-  if (!result.apparentFrame ||
-      !hasValidDimensions(*result.apparentFrame)) {
+  result.fixedPatternApplied =
+      result.cameraFrame && result.apparentFrame &&
+      result.cameraFrame.get() != result.apparentFrame.get();
+  if (!result.cameraFrame || !result.apparentFrame ||
+      !hasValidDimensions(*result.cameraFrame) ||
+      !hasValidDimensions(*result.apparentFrame) ||
+      result.cameraFrame->width != result.apparentFrame->width ||
+      result.cameraFrame->height != result.apparentFrame->height) {
     return result;
   }
 
   if (isIdentityRadiometricCorrection(settings.radiometry)) {
     result.measurementFrame = result.apparentFrame;
   } else {
-    if (!correctionBuffer) {
-      correctionBuffer = std::make_shared<ThermalFrame>();
+    if (!radiometricCorrectionBuffer) {
+      radiometricCorrectionBuffer = std::make_shared<ThermalFrame>();
     }
     correctThermalFrame(*result.apparentFrame, settings.radiometry,
-                        *correctionBuffer);
-    result.measurementFrame = std::move(correctionBuffer);
+                        *radiometricCorrectionBuffer);
+    result.measurementFrame = std::move(radiometricCorrectionBuffer);
   }
 
-  const ThermalFrame& frame = *result.measurementFrame;
+  const ThermalFrame &frame = *result.measurementFrame;
   result.minimumCelsius = frame.minimumCelsius;
   result.maximumCelsius = frame.maximumCelsius;
   result.centerCelsius = frame.centerCelsius;
@@ -80,17 +89,17 @@ ThermalRenderResult renderThermalFrame(
         detectorPointToImage(frame.maximumX, frame.maximumY, frame.width);
   }
 
-  const auto& palette = thermalPalette(settings.palette);
+  const auto &palette = thermalPalette(settings.palette);
   if (!isValidTemperatureRange(result.displayRange)) {
     result.image.fill(palette.front());
     return result;
   }
 
-  const float span = result.displayRange.maximumCelsius -
-                     result.displayRange.minimumCelsius;
+  const float span =
+      result.displayRange.maximumCelsius - result.displayRange.minimumCelsius;
   for (std::size_t detectorX = 0; detectorX < frame.width; ++detectorX) {
-    auto* destination = reinterpret_cast<QRgb*>(result.image.scanLine(
-        static_cast<int>(frame.width - 1 - detectorX)));
+    auto *destination = reinterpret_cast<QRgb *>(
+        result.image.scanLine(static_cast<int>(frame.width - 1 - detectorX)));
     for (std::size_t detectorY = 0; detectorY < frame.height; ++detectorY) {
       const float temperature =
           frame.celsius[detectorY * frame.width + detectorX];

@@ -10,12 +10,13 @@
 class QAction;
 class QActionGroup;
 class QLabel;
+class QProgressDialog;
 class TemperatureScaleWidget;
 class ThermalImageWidget;
 
 class MainWindow final : public QMainWindow {
 public:
-  explicit MainWindow(QWidget* parent = nullptr);
+  explicit MainWindow(QWidget *parent = nullptr);
   ~MainWindow() override;
 
 private:
@@ -25,20 +26,31 @@ private:
     Manual,
   };
 
-  void displayFrame(const ThermalRenderResult& frame);
-  void presentFrame(const ThermalRenderResult& frame);
-  void showCameraConnected(const QString& cameraName);
-  void showCaptureError(const QString& message);
+  void displayFrame(const ThermalRenderResult &frame);
+  void presentFrame(const ThermalRenderResult &frame);
+  void showCameraConnected(const QString &cameraName);
+  void showCaptureError(const QString &message);
   void saveScreenshot();
-  void showLiveStatus(const QString& message);
-  void showTransientStatus(const QString& message);
+  void showLiveStatus(const QString &message);
+  void showTransientStatus(const QString &message);
 
   void createDisplayMenu();
   void createMeasurementMenu();
   void configureRadiometry();
   void loadSettings();
+  void beginFixedPatternCalibration();
+  void cancelFixedPatternCalibration();
+  void setFixedPatternEnabled(bool enabled);
+  void deleteFixedPatternProfile();
+  void updateFixedPatternProfileState(bool available, bool active,
+                                      const QString &message);
+  void updateFixedPatternCalibrationProgress(int frameCount,
+                                             int targetFrameCount,
+                                             int shutterCount);
+  void finishFixedPatternCalibration(bool success, bool canceled,
+                                     const QString &message);
   void saveSettings() const;
-  void updateRadiometricStatus(const RadiometricSettings& settings);
+  void updateRadiometricStatus(const RadiometricSettings &settings);
   void selectPalette(ThermalPaletteId paletteId);
   void cyclePalette();
   void selectAutomaticRange();
@@ -50,27 +62,43 @@ private:
   void applyRenderSettings();
   void updateRangeActionChecks();
   void updateFrameStatus();
+  void updateFixedPatternActions();
+  void updateFixedPatternStatus();
 
-  ThermalImageWidget* imageView_;
-  TemperatureScaleWidget* temperatureScale_;
-  QLabel* radiometricStatusLabel_;
+  ThermalImageWidget *imageView_;
+  TemperatureScaleWidget *temperatureScale_;
+  QLabel *radiometricStatusLabel_;
+  QLabel *fixedPatternStatusLabel_;
+  QProgressDialog *fixedPatternProgressDialog_;
   SeekCameraThread cameraThread_;
   ThermalPaletteId selectedPalette_ = ThermalPaletteId::Inferno;
   RangeMode rangeMode_ = RangeMode::Automatic;
   std::optional<TemperatureRange> fixedRange_;
   RadiometricSettings radiometricSettings_;
+  bool fixedPatternEnabled_ = true;
   ThermalRenderResult currentFrame_;
   TemperatureRange currentDisplayRange_;
   bool hasDisplayRange_ = false;
   bool markersVisible_ = true;
   bool frozen_ = false;
+  bool cameraReady_ = false;
+  bool fixedPatternProfileAvailable_ = false;
+  bool fixedPatternActive_ = false;
+  bool fixedPatternCalibrationRunning_ = false;
+  bool fixedPatternProfileOperationPending_ = false;
+  int fixedPatternCalibrationFrames_ = 0;
+  int fixedPatternCalibrationTargetFrames_ = 0;
+  int fixedPatternCalibrationShutters_ = 0;
 
-  QActionGroup* paletteActionGroup_ = nullptr;
-  QAction* automaticRangeAction_ = nullptr;
-  QAction* lockedRangeAction_ = nullptr;
-  QAction* manualRangeAction_ = nullptr;
-  QAction* markersAction_ = nullptr;
-  QAction* freezeAction_ = nullptr;
+  QActionGroup *paletteActionGroup_ = nullptr;
+  QAction *automaticRangeAction_ = nullptr;
+  QAction *lockedRangeAction_ = nullptr;
+  QAction *manualRangeAction_ = nullptr;
+  QAction *markersAction_ = nullptr;
+  QAction *freezeAction_ = nullptr;
+  QAction *fixedPatternCalibrationAction_ = nullptr;
+  QAction *fixedPatternEnabledAction_ = nullptr;
+  QAction *fixedPatternDeleteAction_ = nullptr;
 
   QString cameraName_;
   QString currentFrameStatusDetails_;

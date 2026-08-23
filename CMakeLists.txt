@@ -16,6 +16,10 @@ pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 add_executable(
   thermalseek
   src/main.cpp
+  src/fixed_pattern_correction.cpp
+  src/fixed_pattern_correction.hpp
+  src/fixed_pattern_profile_store.cpp
+  src/fixed_pattern_profile_store.hpp
   src/main_window.cpp
   src/main_window.hpp
   src/thermal_image_widget.cpp
@@ -59,6 +63,28 @@ if(BUILD_TESTING)
       $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
   )
   add_test(NAME radiometric_correction_test COMMAND radiometric_correction_test)
+
+  add_executable(
+    fixed_pattern_correction_test
+    tests/fixed_pattern_correction_test.cpp
+    src/fixed_pattern_correction.cpp
+    src/fixed_pattern_profile_store.cpp
+  )
+  target_include_directories(
+    fixed_pattern_correction_test
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(fixed_pattern_correction_test PRIVATE Qt6::Core)
+  target_compile_options(
+    fixed_pattern_correction_test
+    PRIVATE
+      $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
+  )
+  add_test(
+    NAME fixed_pattern_correction_test
+    COMMAND fixed_pattern_correction_test
+  )
 
   add_executable(
     thermal_renderer_test

@@ -21,24 +21,28 @@ must build without new warnings.
 
 ## Project boundaries
 
-The current implementation has nine distinct responsibilities:
+The current implementation has eleven distinct responsibilities:
 
 1. `seek_compact_usb.*` owns Seek Compact discovery, USB controls, and raw
    frame transport.
 2. `thermal_processor.*` owns Seek Compact calibration and apparent-temperature
    conversion.
 3. `ThermalFrame` is the common immutable Celsius-field contract.
-4. `radiometric_correction.*` owns emissivity/reflected-background
+4. `fixed_pattern_correction.*` owns covered-lens profile training,
+   validation, and detector-bias subtraction.
+5. `fixed_pattern_profile_store.*` owns camera fingerprinting and atomic,
+   checksummed profile persistence.
+6. `radiometric_correction.*` owns emissivity/reflected-background
    compensation and recalculation of measurement statistics.
-5. `thermal_renderer.*` owns palette selection, display ranges, orientation,
+7. `thermal_renderer.*` owns palette selection, display ranges, orientation,
    and conversion of the corrected field to a display image.
-6. `thermal_inspection.*` owns display/detector mapping and point/ROI
+8. `thermal_inspection.*` owns display/detector mapping and point/ROI
    statistics against the corrected measurement field.
-7. `seek_camera_thread.*` owns the worker lifecycle, pooled immutable frame
-   ownership, rendering, and dispatch to Qt.
-8. `thermal_image_widget.*` owns mouse interaction and measurement overlays.
-9. `main_window.*` owns measurement and presentation controls, persistent
-   settings, status, and screenshots.
+9. `seek_camera_thread.*` owns the worker lifecycle, pooled immutable frame
+   ownership, profile lifecycle, rendering, and dispatch to Qt.
+10. `thermal_image_widget.*` owns mouse interaction and measurement overlays.
+11. `main_window.*` owns measurement and presentation controls, persistent
+    settings, status, and screenshots.
 
 Despite its current name, `ThermalProcessor` is Seek Compact-specific. Do not
 put another camera's frame layout, calibration branches, or USB commands into
@@ -132,6 +136,40 @@ temperature lookup tables, implement and validate those model-specific stages
 before advertising radiometric support. Calibration/control frames must update
 processor state and must not be displayed as normal images.
 
+### Detector fixed-pattern correction
+
+Fixed-pattern correction is a camera-independent stage after the
+camera-specific processor and before emissivity/reflected-background
+compensation. Preserve all three immutable frame identities: the original
+camera-apparent frame, the fixed-pattern-corrected apparent frame, and the
+final measurement frame.
+
+Profile calibration must:
+
+- Continue capture while the modeless UI reports progress or cancellation.
+- Collect the original camera-apparent field, never a field corrected by an
+  existing profile or by radiometric settings.
+- Require at least 96 usable frames and four native shutter refreshes. If the
+  frame target is reached first, keep reading frames and wait for the next
+  required shutter instead of rejecting valid data.
+- Subtract each frame's spatial median, calculate the temporal per-pixel
+  median, remove its 5×5 spatial median, and zero-center the resulting bias.
+  The spatial high-pass prevents a real low-frequency target gradient from
+  being stored as detector bias.
+- Reject global-median drift above 2.0 °C, robust low-frequency span above
+  3.0 °C, temporal residual RMS above 0.5 °C, bias RMS above 1.5 °C, or an
+  absolute bias above 5.0 °C.
+- Recalculate corrected extrema, coordinates, and center temperature.
+- Keep the previous valid profile active until a replacement passes
+  validation and is committed successfully.
+
+Profiles are camera-specific. Key storage by SHA-256 over the fixed-length
+factory-calibration and device-information blobs, include the fingerprint and
+detector dimensions in the payload, verify a payload checksum when loading,
+and commit with `QSaveFile` without direct-write fallback. A missing or invalid
+profile disables the stage; it must not stop camera capture. Never commit
+factory blobs or learned per-camera profile data to the repository.
+
 If only non-radiometric imaging is understood, describe the limitation in the
 proposal instead of inventing or approximating temperatures.
 
@@ -170,6 +208,17 @@ these checks in the change description:
 - Graceful handling of physical disconnect during capture.
 - A screenshot created with `G` containing the image, temperature scale, and
   live statistics.
+
+Fixed-pattern changes additionally require:
+
+- A successful covered-lens calibration through the production UI.
+- Evidence that held-out covered-target fixed-pattern residual decreases
+  without a material median-temperature shift.
+- A normal-scene check that edges remain sharp and the detector-fixed
+  component decreases.
+- Successful enable/disable control while live capture continues.
+- Successful profile reload for the same camera and rejection for a different
+  fingerprint or corrupted payload.
 
 Radiometric claims also need accuracy evidence. Describe the reference target
 or instrument, tested temperature range, emissivity assumptions, ambient

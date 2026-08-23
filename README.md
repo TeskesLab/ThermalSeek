@@ -16,6 +16,8 @@ link libseekthermal.
 - Live capture on a dedicated worker thread.
 - Camera-derived apparent temperatures with configurable emissivity and
   reflected-background compensation.
+- Per-camera detector fixed-pattern correction with a validated covered-lens
+  calibration workflow and checksummed atomic profile storage.
 - Five selectable thermal palettes with a matching temperature scale.
 - Automatic, locked, and manually configured display temperature ranges.
 - Live minimum, maximum, and center readings with hot/cold image markers.
@@ -30,7 +32,7 @@ link libseekthermal.
 
 | Camera | USB ID | Status |
 |---|---|---|
-| Seek Compact / PIR206 | `289d:0010` | Live capture and radiometric temperatures |
+| Seek Compact / PIR206 | `289d:0010` | Live capture, radiometric temperatures, and fixed-pattern correction |
 
 ThermalSeek currently opens the first supported camera it finds. See
 [CONTRIBUTING.md](CONTRIBUTING.md) before adding another model: USB transport,
@@ -60,7 +62,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-Run the focused radiometry, display, and inspection tests with:
+Run the focused correction, display, and inspection tests with:
 
 ```sh
 ctest --test-dir build --output-on-failure
@@ -110,8 +112,8 @@ Do not run the desktop application as root.
 | `G` | Save a screenshot of the ThermalSeek window |
 
 The **Display** menu exposes the same palette, range, marker, freeze, and clear
-controls. The **Measurement** menu contains the radiometric correction
-settings.
+controls. The **Measurement** menu contains radiometric settings plus
+fixed-pattern calibration, enable/disable, and profile-deletion controls.
 
 Move the mouse over the thermal image for an exact spot reading. Click to pin
 a measurement point; click the same detector pixel again to remove it. Drag
@@ -125,6 +127,22 @@ the reflected-background temperature. The corrected temperature field drives
 the image, scale, MIN/MAX markers, spot readings, and ROI statistics. These
 measurement settings, along with the palette, display range, markers, and
 window geometry, persist between sessions.
+
+Fixed-pattern correction removes stable detector-local temperature offsets
+before emissivity/reflected-background compensation. To create a profile,
+place the lens directly against a smooth, matte, room-temperature surface with
+no gap, then choose **Measurement → Calibrate Fixed-Pattern Correction**. Keep
+the camera covered and still while ThermalSeek collects 96 usable frames
+spanning at least four shutter refreshes. Capture continues throughout the
+modeless progress dialog.
+
+ThermalSeek rejects calibration data with excessive target drift, spatial
+non-uniformity, temporal noise, or detector bias. A valid profile is
+zero-centered so it does not intentionally shift scene temperature, saved
+atomically under the platform application-data directory, and keyed by a
+SHA-256 fingerprint of that camera's factory calibration and device
+information. Profiles are not portable between cameras. The permanent status
+shows `FPN No profile`, `FPN Off`, `FPN On`, or calibration progress.
 
 Screenshots are written as PNG files to the platform Pictures directory under
 a `ThermalSeek` subdirectory. The filename format is:
@@ -141,34 +159,44 @@ The status bar reports the saved path or the reason a screenshot failed.
 Seek Compact USB
        |
        v
-seek_compact_usb       discovery, controls, calibration blobs, raw frames
+seek_compact_usb          discovery, controls, calibration blobs, raw frames
        |
        v
-thermal_processor      calibration frames, bad pixels, apparent temperatures
+thermal_processor         calibration frames, bad pixels, apparent temperatures
        |
        v
-ThermalFrame           immutable row-major apparent Celsius pixels
+ThermalFrame              immutable camera-apparent Celsius pixels
        |
        v
-radiometric_correction emissivity and reflected-background compensation
+fixed_pattern_correction  per-camera detector bias subtraction
        |
        v
-ThermalFrame           measurement Celsius plus min/max/center and extrema
+ThermalFrame              corrected apparent Celsius pixels and statistics
        |
        v
-thermal_renderer       palette/range mapping plus both radiometric frames
+radiometric_correction    emissivity and reflected-background compensation
+       |
+       v
+ThermalFrame              measurement Celsius plus min/max/center and extrema
+       |
+       v
+thermal_renderer          palette/range mapping plus all three frame stages
        |
        v
 thermal_image_widget
-       |               display/detector mapping, spot points, ROI, overlays
+       |                  display/detector mapping, spot points, ROI, overlays
        v
-main_window            measurement controls, scale, status, screenshots
+main_window               measurement controls, scale, status, screenshots
 ```
 
 Important source files:
 
 - `src/seek_compact_usb.*` — direct libusb transport for `289d:0010`.
 - `src/thermal_processor.*` — Seek Compact calibration and thermography.
+- `src/fixed_pattern_correction.*` — covered-lens profile training,
+  validation, and detector-bias subtraction.
+- `src/fixed_pattern_profile_store.*` — camera fingerprinting and atomic,
+  checksummed profile persistence.
 - `src/radiometric_correction.*` — emissivity/reflected-background
   compensation and corrected statistics.
 - `src/seek_camera_thread.*` — capture lifecycle, pooled frame ownership, and

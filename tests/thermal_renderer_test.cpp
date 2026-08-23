@@ -9,7 +9,7 @@
 namespace {
 int failures = 0;
 
-void expect(bool condition, const std::string& message) {
+void expect(bool condition, const std::string &message) {
   if (condition) {
     return;
   }
@@ -19,7 +19,6 @@ void expect(bool condition, const std::string& message) {
 bool nearlyEqual(float actual, float expected, float tolerance = 0.0001F) {
   return std::abs(actual - expected) <= tolerance;
 }
-
 
 ThermalFrame sampleFrame() {
   ThermalFrame frame;
@@ -37,31 +36,28 @@ ThermalFrame sampleFrame() {
 }
 
 void testPaletteRegistry() {
-  const auto& descriptors = thermalPaletteDescriptors();
+  const auto &descriptors = thermalPaletteDescriptors();
   expect(descriptors.size() == kThermalPaletteCount,
          "palette registry exposes every palette");
 
-  const auto& whiteHot = thermalPalette(ThermalPaletteId::WhiteHot);
-  expect(whiteHot.front() == qRgb(0, 0, 0),
-         "white-hot starts at black");
-  expect(whiteHot.back() == qRgb(255, 255, 255),
-         "white-hot ends at white");
+  const auto &whiteHot = thermalPalette(ThermalPaletteId::WhiteHot);
+  expect(whiteHot.front() == qRgb(0, 0, 0), "white-hot starts at black");
+  expect(whiteHot.back() == qRgb(255, 255, 255), "white-hot ends at white");
 
-  const auto& blackHot = thermalPalette(ThermalPaletteId::BlackHot);
-  expect(blackHot.front() == qRgb(255, 255, 255),
-         "black-hot starts at white");
-  expect(blackHot.back() == qRgb(0, 0, 0),
-         "black-hot ends at black");
+  const auto &blackHot = thermalPalette(ThermalPaletteId::BlackHot);
+  expect(blackHot.front() == qRgb(255, 255, 255), "black-hot starts at white");
+  expect(blackHot.back() == qRgb(0, 0, 0), "black-hot ends at black");
 }
 
 void testAutomaticRangeAndMarkerMapping() {
   ThermalRenderSettings settings;
   settings.palette = ThermalPaletteId::WhiteHot;
   const auto frame = std::make_shared<ThermalFrame>(sampleFrame());
-  const ThermalRenderResult result = renderThermalFrame(frame, settings);
+  const ThermalRenderResult result = renderThermalFrame(frame, frame, settings);
 
-  expect(result.apparentFrame == frame && result.measurementFrame == frame,
-         "identity radiometry reuses the apparent frame");
+  expect(result.cameraFrame == frame && result.apparentFrame == frame &&
+             result.measurementFrame == frame && !result.fixedPatternApplied,
+         "identity corrections reuse the original camera frame");
   expect(!result.image.isNull(), "valid thermal frame renders an image");
   expect(result.image.size() == QSize(2, 3),
          "renderer preserves the camera orientation transform");
@@ -82,8 +78,8 @@ void testFixedRangeClamping() {
   ThermalRenderSettings settings;
   settings.palette = ThermalPaletteId::WhiteHot;
   settings.fixedRange = TemperatureRange{20.0F, 40.0F};
-  const ThermalRenderResult result = renderThermalFrame(
-      std::make_shared<ThermalFrame>(sampleFrame()), settings);
+  const auto frame = std::make_shared<ThermalFrame>(sampleFrame());
+  const ThermalRenderResult result = renderThermalFrame(frame, frame, settings);
 
   expect(result.displayRange.minimumCelsius == 20.0F &&
              result.displayRange.maximumCelsius == 40.0F,
@@ -101,8 +97,8 @@ void testFixedRangeClamping() {
 void testInvalidFixedRangeFallsBackToAutomatic() {
   ThermalRenderSettings settings;
   settings.fixedRange = TemperatureRange{50.0F, 40.0F};
-  const ThermalRenderResult result = renderThermalFrame(
-      std::make_shared<ThermalFrame>(sampleFrame()), settings);
+  const auto frame = std::make_shared<ThermalFrame>(sampleFrame());
+  const ThermalRenderResult result = renderThermalFrame(frame, frame, settings);
 
   expect(result.displayRange.minimumCelsius == 10.0F &&
              result.displayRange.maximumCelsius == 60.0F,
@@ -116,7 +112,7 @@ void testRadiometricCorrectionDrivesRendering() {
   const auto frame = std::make_shared<ThermalFrame>(sampleFrame());
   const auto correctionBuffer = std::make_shared<ThermalFrame>();
   const ThermalRenderResult result =
-      renderThermalFrame(frame, settings, correctionBuffer);
+      renderThermalFrame(frame, frame, settings, correctionBuffer);
 
   const float expectedMinimum =
       correctApparentTemperature(10.0F, settings.radiometry);
@@ -147,7 +143,23 @@ void testRadiometricCorrectionDrivesRendering() {
          "corrected range maps to the full palette");
 }
 
-}  // namespace
+void testFixedPatternSourceIsPreserved() {
+  ThermalRenderSettings settings;
+  const auto cameraFrame = std::make_shared<ThermalFrame>(sampleFrame());
+  const auto apparentFrame = std::make_shared<ThermalFrame>(sampleFrame());
+  apparentFrame->celsius.front() = 11.0F;
+  apparentFrame->minimumCelsius = 11.0F;
+
+  const ThermalRenderResult result =
+      renderThermalFrame(cameraFrame, apparentFrame, settings);
+  expect(result.cameraFrame == cameraFrame &&
+             result.apparentFrame == apparentFrame &&
+             result.measurementFrame == apparentFrame,
+         "renderer preserves camera and fixed-pattern-corrected frames");
+  expect(result.fixedPatternApplied,
+         "renderer reports that fixed-pattern correction was applied");
+}
+} // namespace
 
 int main() {
   testPaletteRegistry();
@@ -155,6 +167,7 @@ int main() {
   testFixedRangeClamping();
   testInvalidFixedRangeFallsBackToAutomatic();
   testRadiometricCorrectionDrivesRendering();
+  testFixedPatternSourceIsPreserved();
 
   if (failures != 0) {
     std::cerr << failures << " renderer test(s) failed\n";
