@@ -1,6 +1,7 @@
 #include "thermal_palette.hpp"
 #include "thermal_renderer.hpp"
 
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -15,6 +16,10 @@ void expect(bool condition, const std::string& message) {
   std::cerr << "FAIL: " << message << '\n';
   ++failures;
 }
+bool nearlyEqual(float actual, float expected, float tolerance = 0.0001F) {
+  return std::abs(actual - expected) <= tolerance;
+}
+
 
 ThermalFrame sampleFrame() {
   ThermalFrame frame;
@@ -52,9 +57,11 @@ void testPaletteRegistry() {
 void testAutomaticRangeAndMarkerMapping() {
   ThermalRenderSettings settings;
   settings.palette = ThermalPaletteId::WhiteHot;
-  const ThermalRenderResult result = renderThermalFrame(
-      std::make_shared<ThermalFrame>(sampleFrame()), settings);
+  const auto frame = std::make_shared<ThermalFrame>(sampleFrame());
+  const ThermalRenderResult result = renderThermalFrame(frame, settings);
 
+  expect(result.apparentFrame == frame && result.measurementFrame == frame,
+         "identity radiometry reuses the apparent frame");
   expect(!result.image.isNull(), "valid thermal frame renders an image");
   expect(result.image.size() == QSize(2, 3),
          "renderer preserves the camera orientation transform");
@@ -101,6 +108,45 @@ void testInvalidFixedRangeFallsBackToAutomatic() {
              result.displayRange.maximumCelsius == 60.0F,
          "invalid fixed range falls back to frame extrema");
 }
+
+void testRadiometricCorrectionDrivesRendering() {
+  ThermalRenderSettings settings;
+  settings.palette = ThermalPaletteId::WhiteHot;
+  settings.radiometry = RadiometricSettings{0.8F, 20.0F};
+  const auto frame = std::make_shared<ThermalFrame>(sampleFrame());
+  const auto correctionBuffer = std::make_shared<ThermalFrame>();
+  const ThermalRenderResult result =
+      renderThermalFrame(frame, settings, correctionBuffer);
+
+  const float expectedMinimum =
+      correctApparentTemperature(10.0F, settings.radiometry);
+  const float expectedMaximum =
+      correctApparentTemperature(60.0F, settings.radiometry);
+  expect(result.apparentFrame == frame &&
+             result.measurementFrame == correctionBuffer,
+         "non-identity radiometry preserves the apparent frame and reuses "
+         "the supplied correction buffer");
+  expect(result.radiometricSettings.emissivity == 0.8F &&
+             result.radiometricSettings.reflectedTemperatureCelsius == 20.0F,
+         "render result identifies the correction applied to its pixels");
+  expect(result.measurementFrame &&
+             nearlyEqual(result.measurementFrame->celsius.front(),
+                         expectedMinimum),
+         "inspection frame contains corrected measurements");
+  expect(nearlyEqual(result.minimumCelsius, expectedMinimum) &&
+             nearlyEqual(result.maximumCelsius, expectedMaximum),
+         "frame statistics use corrected temperatures");
+  expect(nearlyEqual(result.displayRange.minimumCelsius, expectedMinimum) &&
+             nearlyEqual(result.displayRange.maximumCelsius, expectedMaximum),
+         "automatic display range uses corrected extrema");
+  expect(result.coldestPoint == QPoint(0, 2) &&
+             result.hottestPoint == QPoint(1, 0),
+         "corrected extrema drive the rendered markers");
+  expect(result.image.pixel(0, 2) == qRgb(0, 0, 0) &&
+             result.image.pixel(1, 0) == qRgb(255, 255, 255),
+         "corrected range maps to the full palette");
+}
+
 }  // namespace
 
 int main() {
@@ -108,6 +154,7 @@ int main() {
   testAutomaticRangeAndMarkerMapping();
   testFixedRangeClamping();
   testInvalidFixedRangeFallsBackToAutomatic();
+  testRadiometricCorrectionDrivesRendering();
 
   if (failures != 0) {
     std::cerr << failures << " renderer test(s) failed\n";

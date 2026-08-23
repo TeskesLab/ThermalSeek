@@ -137,8 +137,13 @@ void SeekCameraThread::run() {
       }
 
       uncalibratedNormalFrames = 0;
-      emit frameReady(
-          renderThermalFrame(thermalFrame, renderSettingsSnapshot()));
+      const ThermalRenderSettings renderSettings = renderSettingsSnapshot();
+      std::shared_ptr<ThermalFrame> correctionBuffer;
+      if (!isIdentityRadiometricCorrection(renderSettings.radiometry)) {
+        correctionBuffer = framePool->acquire();
+      }
+      emit frameReady(renderThermalFrame(
+          thermalFrame, renderSettings, std::move(correctionBuffer)));
       thermalFrame = framePool->acquire();
     }
 

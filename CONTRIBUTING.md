@@ -21,21 +21,24 @@ must build without new warnings.
 
 ## Project boundaries
 
-The current implementation has eight distinct responsibilities:
+The current implementation has nine distinct responsibilities:
 
 1. `seek_compact_usb.*` owns Seek Compact discovery, USB controls, and raw
    frame transport.
-2. `thermal_processor.*` owns Seek Compact calibration and radiometric
+2. `thermal_processor.*` owns Seek Compact calibration and apparent-temperature
    conversion.
-3. `ThermalFrame` is the common radiometric output.
-4. `thermal_renderer.*` owns palette selection, display ranges, orientation,
-   and conversion to a display image.
-5. `thermal_inspection.*` owns display/detector mapping and point/ROI
-   statistics against original Celsius pixels.
-6. `seek_camera_thread.*` owns the worker lifecycle, pooled immutable frame
+3. `ThermalFrame` is the common immutable Celsius-field contract.
+4. `radiometric_correction.*` owns emissivity/reflected-background
+   compensation and recalculation of measurement statistics.
+5. `thermal_renderer.*` owns palette selection, display ranges, orientation,
+   and conversion of the corrected field to a display image.
+6. `thermal_inspection.*` owns display/detector mapping and point/ROI
+   statistics against the corrected measurement field.
+7. `seek_camera_thread.*` owns the worker lifecycle, pooled immutable frame
    ownership, rendering, and dispatch to Qt.
-7. `thermal_image_widget.*` owns mouse interaction and measurement overlays.
-8. `main_window.*` owns presentation controls, status, and screenshots.
+8. `thermal_image_widget.*` owns mouse interaction and measurement overlays.
+9. `main_window.*` owns measurement and presentation controls, persistent
+   settings, status, and screenshots.
 
 Despite its current name, `ThermalProcessor` is Seek Compact-specific. Do not
 put another camera's frame layout, calibration branches, or USB commands into
@@ -97,14 +100,35 @@ A new processor must produce `ThermalFrame` using these invariants:
 - `celsius.size() == width * height`.
 - Pixels are row-major in the camera's native detector orientation.
 - Display rotation or mirroring remains a rendering concern.
-- Displayable pixels are finite Celsius values.
+- Displayable pixels are finite apparent temperatures in Celsius.
 - `minimumCelsius` and `maximumCelsius` are the actual frame extrema.
 - `centerCelsius` is the deterministic center detector sample.
 - Extrema coordinates identify the pixels represented by the extrema values.
 
+Radiometric correction is a separate, camera-independent measurement stage:
+
+- Keep the apparent-temperature frame immutable so settings can be changed or
+  replayed without accumulating correction error.
+- Accept only finite settings with `0 < emissivity <= 1` and a reflected
+  temperature at or above absolute zero.
+- Emissivity `1` is an exact identity operation and must reuse the apparent
+  frame rather than allocating or copying in the capture hot path.
+- The corrected field must drive rendering, automatic range selection,
+  extrema, spot readings, and ROI statistics consistently.
+
+For apparent and reflected temperatures expressed in Kelvin, the implemented
+measurement model is:
+
+```text
+T_object = ((T_apparent^4 - (1 - emissivity) * T_reflected^4)
+            / emissivity)^(1/4)
+```
+
+Clamp the radiance term to zero before taking the fourth root.
+
 Raw detector values must not be labeled as temperatures. If a camera needs
-factory calibration, shutter frames, gain maps, bad-pixel repair, emissivity
-correction, or temperature lookup tables, implement and validate those stages
+factory calibration, shutter frames, gain maps, bad-pixel repair, or
+temperature lookup tables, implement and validate those model-specific stages
 before advertising radiometric support. Calibration/control frames must update
 processor state and must not be displayed as normal images.
 

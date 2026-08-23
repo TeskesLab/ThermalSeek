@@ -22,6 +22,8 @@ add_executable(
   src/thermal_image_widget.hpp
   src/thermal_inspection.cpp
   src/thermal_inspection.hpp
+  src/radiometric_correction.cpp
+  src/radiometric_correction.hpp
   src/seek_compact_usb.cpp
   src/seek_compact_usb.hpp
   src/seek_camera_thread.cpp
@@ -42,9 +44,27 @@ target_compile_options(
 
 if(BUILD_TESTING)
   add_executable(
+    radiometric_correction_test
+    tests/radiometric_correction_test.cpp
+    src/radiometric_correction.cpp
+  )
+  target_include_directories(
+    radiometric_correction_test
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_options(
+    radiometric_correction_test
+    PRIVATE
+      $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
+  )
+  add_test(NAME radiometric_correction_test COMMAND radiometric_correction_test)
+
+  add_executable(
     thermal_renderer_test
     tests/thermal_renderer_test.cpp
     src/thermal_palette.cpp
+    src/radiometric_correction.cpp
     src/thermal_renderer.cpp
   )
   target_include_directories(

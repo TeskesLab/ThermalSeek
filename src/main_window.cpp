@@ -4,11 +4,12 @@
 #include "thermal_palette.hpp"
 
 #include <algorithm>
-#include <optional>
 #include <cmath>
+#include <optional>
 
 #include <QAction>
 #include <QActionGroup>
+#include <QByteArray>
 #include <QDebug>
 #include <QDateTime>
 #include <QDir>
@@ -18,6 +19,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QKeySequence>
+#include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -25,6 +27,7 @@
 #include <QPixmap>
 #include <QShortcut>
 #include <QSizePolicy>
+#include <QSettings>
 #include <QStatusBar>
 #include <QStandardPaths>
 #include <QTimer>
@@ -176,15 +179,75 @@ std::optional<TemperatureRange> requestManualRange(
   }
   return selectedRange;
 }
+
+std::optional<RadiometricSettings> requestRadiometricSettings(
+    QWidget* parent, const RadiometricSettings& initialSettings) {
+  QDialog dialog(parent);
+  dialog.setWindowTitle(QStringLiteral("Radiometric Settings"));
+
+  QFormLayout layout(&dialog);
+  QDoubleSpinBox emissivity(&dialog);
+  emissivity.setDecimals(2);
+  emissivity.setRange(0.01, 1.0);
+  emissivity.setSingleStep(0.01);
+  emissivity.setValue(initialSettings.emissivity);
+  layout.addRow(QStringLiteral("&Emissivity:"), &emissivity);
+
+  QDoubleSpinBox reflectedTemperature(&dialog);
+  reflectedTemperature.setDecimals(1);
+  reflectedTemperature.setRange(-273.1, 2000.0);
+  reflectedTemperature.setSingleStep(1.0);
+  reflectedTemperature.setSuffix(QStringLiteral(" °C"));
+  reflectedTemperature.setValue(
+      initialSettings.reflectedTemperatureCelsius);
+  layout.addRow(QStringLiteral("&Reflected temperature:"),
+                &reflectedTemperature);
+
+  QLabel explanation(
+      QStringLiteral(
+          "Emissivity 1.00 preserves the camera's apparent temperature. "
+          "Lower values compensate for radiation reflected by the target."),
+      &dialog);
+  explanation.setWordWrap(true);
+  layout.addRow(&explanation);
+
+  QDialogButtonBox buttons(
+      QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  layout.addRow(&buttons);
+  RadiometricSettings selectedSettings = initialSettings;
+  QObject::connect(&buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+    selectedSettings = RadiometricSettings{
+        static_cast<float>(emissivity.value()),
+        static_cast<float>(reflectedTemperature.value())};
+    if (!isValidRadiometricSettings(selectedSettings)) {
+      QMessageBox::warning(
+          &dialog, QStringLiteral("Invalid Radiometric Settings"),
+          QStringLiteral(
+              "Emissivity must be greater than zero and no greater than "
+              "one. Reflected temperature cannot be below absolute zero."));
+      return;
+    }
+    dialog.accept();
+  });
+  QObject::connect(&buttons, &QDialogButtonBox::rejected, &dialog,
+                   &QDialog::reject);
+
+  if (dialog.exec() != QDialog::Accepted) {
+    return std::nullopt;
+  }
+  return selectedSettings;
+}
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       imageView_(new ThermalImageWidget(this)),
       temperatureScale_(new TemperatureScaleWidget(this)),
+      radiometricStatusLabel_(new QLabel(this)),
       cameraThread_(this) {
   setWindowTitle(QStringLiteral("ThermalSeek"));
   resize(900, 640);
+  loadSettings();
 
   auto* content = new QWidget(this);
   content->setStyleSheet(QStringLiteral("background: black;"));
@@ -195,7 +258,14 @@ MainWindow::MainWindow(QWidget* parent)
   layout->addWidget(imageView_, 1);
   setCentralWidget(content);
 
+  temperatureScale_->setPalette(selectedPalette_);
+  imageView_->setMarkersVisible(markersVisible_);
+  radiometricStatusLabel_->setToolTip(
+      QStringLiteral("Emissivity and reflected-background temperature"));
+  statusBar()->addPermanentWidget(radiometricStatusLabel_);
+  updateRadiometricStatus(radiometricSettings_);
   createDisplayMenu();
+  createMeasurementMenu();
   auto* screenshotShortcut = new QShortcut(QKeySequence(Qt::Key_G), this);
   connect(screenshotShortcut, &QShortcut::activated, this,
           &MainWindow::saveScreenshot);
@@ -213,6 +283,7 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+  saveSettings();
   cameraThread_.stop();
 }
 
@@ -241,6 +312,7 @@ void MainWindow::presentFrame(const ThermalRenderResult& frame) {
           .arg(frame.centerCelsius, 0, 'f', 1)
           .arg(frame.minimumCelsius, 0, 'f', 1)
           .arg(frame.maximumCelsius, 0, 'f', 1);
+  updateRadiometricStatus(frame.radiometricSettings);
   updateFrameStatus();
 }
 
@@ -254,6 +326,7 @@ void MainWindow::showCameraConnected(const QString& cameraName) {
   imageView_->setFrozen(false);
   imageView_->clearFrame(QStringLiteral("Calibrating thermal camera…"));
   temperatureScale_->clearRange();
+  updateRadiometricStatus(radiometricSettings_);
   showLiveStatus(QStringLiteral("Calibrating — %1").arg(cameraName_));
   qInfo().noquote() << "Connected to" << cameraName_;
 }
@@ -268,6 +341,7 @@ void MainWindow::showCaptureError(const QString& message) {
   imageView_->setFrozen(false);
   imageView_->clearFrame(QStringLiteral("Camera unavailable"));
   temperatureScale_->clearRange();
+  updateRadiometricStatus(radiometricSettings_);
   transientStatusMessage_.clear();
   showLiveStatus(message);
   qWarning().noquote() << "Camera capture failed:" << message;
@@ -424,6 +498,33 @@ void MainWindow::createDisplayMenu() {
           &MainWindow::clearMeasurements);
 }
 
+void MainWindow::createMeasurementMenu() {
+  auto* measurementMenu =
+      menuBar()->addMenu(QStringLiteral("&Measurement"));
+  auto* radiometricSettingsAction =
+      measurementMenu->addAction(QStringLiteral("&Radiometric Settings…"));
+  radiometricSettingsAction->setShortcut(QKeySequence(Qt::Key_R));
+  connect(radiometricSettingsAction, &QAction::triggered, this,
+          &MainWindow::configureRadiometry);
+}
+
+void MainWindow::configureRadiometry() {
+  const std::optional<RadiometricSettings> selectedSettings =
+      requestRadiometricSettings(this, radiometricSettings_);
+  if (!selectedSettings.has_value()) {
+    return;
+  }
+
+  radiometricSettings_ = *selectedSettings;
+  updateRadiometricStatus(radiometricSettings_);
+  applyRenderSettings();
+  saveSettings();
+  showTransientStatus(
+      QStringLiteral("Radiometry: emissivity %1, reflected %2 °C")
+          .arg(radiometricSettings_.emissivity, 0, 'f', 2)
+          .arg(radiometricSettings_.reflectedTemperatureCelsius, 0, 'f', 1));
+}
+
 void MainWindow::selectPalette(ThermalPaletteId paletteId) {
   selectedPalette_ = paletteId;
   for (QAction* action : paletteActionGroup_->actions()) {
@@ -432,6 +533,7 @@ void MainWindow::selectPalette(ThermalPaletteId paletteId) {
   }
   temperatureScale_->setPalette(selectedPalette_);
   applyRenderSettings();
+  saveSettings();
   showTransientStatus(
       QStringLiteral("Palette: %1").arg(paletteName(selectedPalette_)));
 }
@@ -456,6 +558,7 @@ void MainWindow::selectAutomaticRange() {
   fixedRange_.reset();
   updateRangeActionChecks();
   applyRenderSettings();
+  saveSettings();
   showTransientStatus(QStringLiteral("Display range: automatic"));
 }
 
@@ -471,6 +574,7 @@ void MainWindow::lockCurrentRange() {
   fixedRange_ = currentDisplayRange_;
   updateRangeActionChecks();
   applyRenderSettings();
+  saveSettings();
   showTransientStatus(
       QStringLiteral("Display range locked: %1–%2 °C")
           .arg(fixedRange_->minimumCelsius, 0, 'f', 1)
@@ -496,6 +600,7 @@ void MainWindow::selectManualRange() {
   fixedRange_ = *selectedRange;
   updateRangeActionChecks();
   applyRenderSettings();
+  saveSettings();
   showTransientStatus(
       QStringLiteral("Manual display range: %1–%2 °C")
           .arg(fixedRange_->minimumCelsius, 0, 'f', 1)
@@ -505,6 +610,7 @@ void MainWindow::selectManualRange() {
 void MainWindow::setMarkersVisible(bool visible) {
   markersVisible_ = visible;
   imageView_->setMarkersVisible(markersVisible_);
+  saveSettings();
   showTransientStatus(markersVisible_
                           ? QStringLiteral("Hot/cold markers shown")
                           : QStringLiteral("Hot/cold markers hidden"));
@@ -534,11 +640,117 @@ void MainWindow::applyRenderSettings() {
   ThermalRenderSettings settings;
   settings.palette = selectedPalette_;
   settings.fixedRange = fixedRange_;
+  settings.radiometry = radiometricSettings_;
   cameraThread_.setRenderSettings(settings);
 
-  if (frozen_ && currentFrame_.sourceFrame) {
-    presentFrame(renderThermalFrame(currentFrame_.sourceFrame, settings));
+  if (currentFrame_.apparentFrame) {
+    presentFrame(renderThermalFrame(currentFrame_.apparentFrame, settings));
   }
+}
+
+void MainWindow::loadSettings() {
+  QSettings settings;
+
+  const int savedPalette = settings
+                               .value(QStringLiteral("display/palette"),
+                                      static_cast<int>(selectedPalette_))
+                               .toInt();
+  const auto& palettes = thermalPaletteDescriptors();
+  const auto palette =
+      std::find_if(palettes.begin(), palettes.end(),
+                   [savedPalette](const ThermalPaletteDescriptor& descriptor) {
+                     return static_cast<int>(descriptor.id) == savedPalette;
+                   });
+  if (palette != palettes.end()) {
+    selectedPalette_ = palette->id;
+  }
+
+  markersVisible_ =
+      settings.value(QStringLiteral("display/showMarkers"), true).toBool();
+
+  const RadiometricSettings savedRadiometry{
+      settings.value(QStringLiteral("measurement/emissivity"), 1.0).toFloat(),
+      settings
+          .value(QStringLiteral("measurement/reflectedTemperatureCelsius"),
+                 20.0)
+          .toFloat()};
+  if (isValidRadiometricSettings(savedRadiometry)) {
+    radiometricSettings_ = savedRadiometry;
+  }
+
+  const TemperatureRange savedRange{
+      settings
+          .value(QStringLiteral("display/fixedMinimumCelsius"), 0.0)
+          .toFloat(),
+      settings
+          .value(QStringLiteral("display/fixedMaximumCelsius"), 0.0)
+          .toFloat()};
+  const QString savedRangeMode =
+      settings
+          .value(QStringLiteral("display/rangeMode"),
+                 QStringLiteral("automatic"))
+          .toString();
+  if (isValidTemperatureRange(savedRange) &&
+      savedRangeMode == QStringLiteral("locked")) {
+    rangeMode_ = RangeMode::Locked;
+    fixedRange_ = savedRange;
+  } else if (isValidTemperatureRange(savedRange) &&
+             savedRangeMode == QStringLiteral("manual")) {
+    rangeMode_ = RangeMode::Manual;
+    fixedRange_ = savedRange;
+  } else {
+    rangeMode_ = RangeMode::Automatic;
+    fixedRange_.reset();
+  }
+
+  const QByteArray savedGeometry =
+      settings.value(QStringLiteral("window/geometry")).toByteArray();
+  if (!savedGeometry.isEmpty()) {
+    restoreGeometry(savedGeometry);
+  }
+}
+
+void MainWindow::saveSettings() const {
+  QSettings settings;
+  settings.setValue(QStringLiteral("display/palette"),
+                    static_cast<int>(selectedPalette_));
+  settings.setValue(QStringLiteral("display/showMarkers"), markersVisible_);
+
+  QString rangeMode = QStringLiteral("automatic");
+  if (rangeMode_ == RangeMode::Locked) {
+    rangeMode = QStringLiteral("locked");
+  } else if (rangeMode_ == RangeMode::Manual) {
+    rangeMode = QStringLiteral("manual");
+  }
+  settings.setValue(QStringLiteral("display/rangeMode"), rangeMode);
+  if (fixedRange_.has_value() && isValidTemperatureRange(*fixedRange_)) {
+    settings.setValue(QStringLiteral("display/fixedMinimumCelsius"),
+                      fixedRange_->minimumCelsius);
+    settings.setValue(QStringLiteral("display/fixedMaximumCelsius"),
+                      fixedRange_->maximumCelsius);
+  } else {
+    settings.remove(QStringLiteral("display/fixedMinimumCelsius"));
+    settings.remove(QStringLiteral("display/fixedMaximumCelsius"));
+  }
+
+  settings.setValue(QStringLiteral("measurement/emissivity"),
+                    radiometricSettings_.emissivity);
+  settings.setValue(
+      QStringLiteral("measurement/reflectedTemperatureCelsius"),
+      radiometricSettings_.reflectedTemperatureCelsius);
+  settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+  settings.sync();
+  if (settings.status() != QSettings::NoError) {
+    qWarning() << "Could not persist ThermalSeek settings";
+  }
+}
+
+void MainWindow::updateRadiometricStatus(
+    const RadiometricSettings& settings) {
+  radiometricStatusLabel_->setText(
+      QStringLiteral("ε %1 · Reflected %2 °C")
+          .arg(settings.emissivity, 0, 'f', 2)
+          .arg(settings.reflectedTemperatureCelsius, 0, 'f', 1));
 }
 
 void MainWindow::updateRangeActionChecks() {

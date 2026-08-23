@@ -9,6 +9,7 @@
 
 class QAction;
 class QActionGroup;
+class QLabel;
 class TemperatureScaleWidget;
 class ThermalImageWidget;
 
@@ -33,6 +34,11 @@ private:
   void showTransientStatus(const QString& message);
 
   void createDisplayMenu();
+  void createMeasurementMenu();
+  void configureRadiometry();
+  void loadSettings();
+  void saveSettings() const;
+  void updateRadiometricStatus(const RadiometricSettings& settings);
   void selectPalette(ThermalPaletteId paletteId);
   void cyclePalette();
   void selectAutomaticRange();
@@ -47,10 +53,12 @@ private:
 
   ThermalImageWidget* imageView_;
   TemperatureScaleWidget* temperatureScale_;
+  QLabel* radiometricStatusLabel_;
   SeekCameraThread cameraThread_;
   ThermalPaletteId selectedPalette_ = ThermalPaletteId::Inferno;
   RangeMode rangeMode_ = RangeMode::Automatic;
   std::optional<TemperatureRange> fixedRange_;
+  RadiometricSettings radiometricSettings_;
   ThermalRenderResult currentFrame_;
   TemperatureRange currentDisplayRange_;
   bool hasDisplayRange_ = false;

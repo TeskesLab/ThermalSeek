@@ -33,15 +33,29 @@ bool isValidTemperatureRange(const TemperatureRange& range) noexcept {
 }
 
 ThermalRenderResult renderThermalFrame(
-    std::shared_ptr<const ThermalFrame> sourceFrame,
-    const ThermalRenderSettings& settings) {
+    std::shared_ptr<const ThermalFrame> apparentFrame,
+    const ThermalRenderSettings& settings,
+    std::shared_ptr<ThermalFrame> correctionBuffer) {
   ThermalRenderResult result;
-  result.sourceFrame = std::move(sourceFrame);
-  if (!result.sourceFrame) {
+  result.apparentFrame = std::move(apparentFrame);
+  result.radiometricSettings = settings.radiometry;
+  if (!result.apparentFrame ||
+      !hasValidDimensions(*result.apparentFrame)) {
     return result;
   }
 
-  const ThermalFrame& frame = *result.sourceFrame;
+  if (isIdentityRadiometricCorrection(settings.radiometry)) {
+    result.measurementFrame = result.apparentFrame;
+  } else {
+    if (!correctionBuffer) {
+      correctionBuffer = std::make_shared<ThermalFrame>();
+    }
+    correctThermalFrame(*result.apparentFrame, settings.radiometry,
+                        *correctionBuffer);
+    result.measurementFrame = std::move(correctionBuffer);
+  }
+
+  const ThermalFrame& frame = *result.measurementFrame;
   result.minimumCelsius = frame.minimumCelsius;
   result.maximumCelsius = frame.maximumCelsius;
   result.centerCelsius = frame.centerCelsius;
@@ -50,10 +64,6 @@ ThermalRenderResult renderThermalFrame(
               isValidTemperatureRange(*settings.fixedRange)
           ? *settings.fixedRange
           : TemperatureRange{frame.minimumCelsius, frame.maximumCelsius};
-
-  if (!hasValidDimensions(frame)) {
-    return result;
-  }
 
   result.image = QImage(static_cast<int>(frame.height),
                         static_cast<int>(frame.width), QImage::Format_RGB32);
