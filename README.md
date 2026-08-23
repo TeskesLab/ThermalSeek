@@ -9,6 +9,8 @@ The project currently supports one camera family and has been tested on
 Linux. Camera support is implemented in-tree; ThermalSeek does not build or
 link libseekthermal.
 
+![ThermalSeek live view showing a colorized Seek Compact image, Celsius scale, and temperature readings](docs/images/thermalseek-live.png)
+
 ## Features
 
 - Live capture on a dedicated worker thread.
