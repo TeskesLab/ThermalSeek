@@ -13,6 +13,7 @@ build the project:
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
 GCC and Clang builds enable `-Wall`, `-Wextra`, and `-Wpedantic`. Contributions
@@ -20,15 +21,19 @@ must build without new warnings.
 
 ## Project boundaries
 
-The current implementation has four distinct responsibilities:
+The current implementation has six distinct responsibilities:
 
 1. `seek_compact_usb.*` owns Seek Compact discovery, USB controls, and raw
    frame transport.
 2. `thermal_processor.*` owns Seek Compact calibration and radiometric
    conversion.
-3. `ThermalFrame` is the common output consumed by rendering and the UI.
-4. `seek_camera_thread.*` owns the worker-thread lifecycle and dispatches
-   completed frames to Qt.
+3. `ThermalFrame` is the common radiometric output.
+4. `thermal_renderer.*` owns palette selection, display ranges, orientation,
+   and conversion to a display image.
+5. `seek_camera_thread.*` owns the worker-thread lifecycle and dispatches
+   rendered frames to Qt.
+6. `main_window.*` owns presentation controls, extrema overlays, status, and
+   screenshots.
 
 Despite its current name, `ThermalProcessor` is Seek Compact-specific. Do not
 put another camera's frame layout, calibration branches, or USB commands into

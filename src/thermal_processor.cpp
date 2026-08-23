@@ -466,8 +466,16 @@ void ThermalProcessor::processNormalFrame(
 
   const auto extrema =
       std::minmax_element(output.celsius.begin(), output.celsius.end());
+  const std::size_t minimumIndex =
+      static_cast<std::size_t>(extrema.first - output.celsius.begin());
+  const std::size_t maximumIndex =
+      static_cast<std::size_t>(extrema.second - output.celsius.begin());
   output.minimumCelsius = *extrema.first;
   output.maximumCelsius = *extrema.second;
+  output.minimumX = minimumIndex % output.width;
+  output.minimumY = minimumIndex / output.width;
+  output.maximumX = maximumIndex % output.width;
+  output.maximumY = maximumIndex / output.width;
   output.centerCelsius =
       output.celsius[detectorIndex(kDetectorWidth / 2, kDetectorHeight / 2)];
 }

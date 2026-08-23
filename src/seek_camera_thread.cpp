@@ -2,61 +2,38 @@
 #include "seek_compact_usb.hpp"
 
 #include "thermal_processor.hpp"
-#include "thermal_palette.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
 #include <exception>
-#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include <QMutexLocker>
+
 
 namespace {
 constexpr int kMaxConsecutiveCaptureTimeouts = 3;
 constexpr int kMaxUncalibratedNormalFrames = 30;
-
-
-QImage renderFrame(const ThermalFrame& frame) {
-  const int sourceWidth = static_cast<int>(frame.width);
-  const int sourceHeight = static_cast<int>(frame.height);
-  QImage image(sourceHeight, sourceWidth, QImage::Format_RGB32);
-  const auto& palette = thermalPalette();
-
-  const float range = frame.maximumCelsius - frame.minimumCelsius;
-  if (!std::isfinite(frame.minimumCelsius) ||
-      !std::isfinite(frame.maximumCelsius) ||
-      range <= std::numeric_limits<float>::epsilon()) {
-    image.fill(palette.front());
-    return image;
-  }
-
-  for (int sourceX = 0; sourceX < sourceWidth; ++sourceX) {
-    auto* destination =
-        reinterpret_cast<QRgb*>(image.scanLine(sourceWidth - 1 - sourceX));
-    for (int sourceY = 0; sourceY < sourceHeight; ++sourceY) {
-      const float temperature =
-          frame.celsius[static_cast<std::size_t>(sourceY) * frame.width +
-                        static_cast<std::size_t>(sourceX)];
-      const float normalized =
-          std::clamp((temperature - frame.minimumCelsius) / range, 0.0F, 1.0F);
-      const std::size_t paletteIndex =
-          static_cast<std::size_t>(std::lround(normalized * 255.0F));
-      destination[sourceY] = palette[paletteIndex];
-    }
-  }
-  return image;
-}
 }  // namespace
 
-SeekCameraThread::SeekCameraThread(QObject* parent) : QThread(parent) {}
+SeekCameraThread::SeekCameraThread(QObject* parent) : QThread(parent) {
+  qRegisterMetaType<ThermalRenderResult>();
+}
 
 SeekCameraThread::~SeekCameraThread() {
   stop();
+}
+
+void SeekCameraThread::setRenderSettings(
+    const ThermalRenderSettings& settings) {
+  const QMutexLocker locker(&renderSettingsMutex_);
+  renderSettings_ = settings;
+}
+
+ThermalRenderSettings SeekCameraThread::renderSettingsSnapshot() const {
+  const QMutexLocker locker(&renderSettingsMutex_);
+  return renderSettings_;
 }
 
 void SeekCameraThread::stop() {
@@ -118,9 +95,9 @@ void SeekCameraThread::run() {
       }
 
       uncalibratedNormalFrames = 0;
-      emit frameReady(renderFrame(thermalFrame), thermalFrame.minimumCelsius,
-                      thermalFrame.maximumCelsius,
-                      thermalFrame.centerCelsius);
+      const ThermalRenderResult renderedFrame =
+          renderThermalFrame(thermalFrame, renderSettingsSnapshot());
+      emit frameReady(renderedFrame);
     }
 
     disconnectCamera();

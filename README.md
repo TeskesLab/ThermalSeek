@@ -15,8 +15,9 @@ link libseekthermal.
 
 - Live capture on a dedicated worker thread.
 - Camera-derived radiometric calibration and Celsius output.
-- Color thermal lookup table with an external temperature scale.
-- Live minimum, maximum, and center temperature readings.
+- Five selectable thermal palettes with a matching temperature scale.
+- Automatic, locked, and manually configured display temperature ranges.
+- Live minimum, maximum, and center readings with hot/cold image markers.
 - Resizable Qt Widgets interface.
 - Single-key PNG screenshots containing the thermal view, scale, and status.
 - Direct libusb transport with deterministic cleanup and timeout handling.
@@ -55,6 +56,12 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
+Run the focused rendering tests with:
+
+```sh
+ctest --test-dir build --output-on-failure
+```
+
 Run the application with:
 
 ```sh
@@ -88,7 +95,14 @@ Do not run the desktop application as root.
 
 | Key | Action |
 |---|---|
+| `P` | Cycle through thermal palettes |
+| `A` | Use the automatic per-frame temperature range |
+| `L` | Lock the currently displayed temperature range |
+| `M` | Configure a manual temperature range |
+| `H` | Toggle the hot and cold image markers |
 | `G` | Save a screenshot of the ThermalSeek window |
+
+The **Display** menu exposes the same palette, range, and marker controls.
 
 Screenshots are written as PNG files to the platform Pictures directory under
 a `ThermalSeek` subdirectory. The filename format is:
@@ -111,19 +125,23 @@ seek_compact_usb   device discovery, controls, calibration blobs, raw frames
 thermal_processor  calibration frames, bad pixels, radiometric conversion
        |
        v
-ThermalFrame       row-major Celsius pixels plus min/max/center
+ThermalFrame       row-major Celsius pixels plus min/max/center and extrema
        |
        v
-thermal_palette -> main_window
+thermal_renderer   palette and display-range mapping
+       |
+       v
+main_window        temperature scale, extrema overlays, controls, screenshots
 ```
 
 Important source files:
 
 - `src/seek_compact_usb.*` — direct libusb transport for `289d:0010`.
 - `src/thermal_processor.*` — Seek Compact calibration and thermography.
-- `src/seek_camera_thread.*` — capture lifecycle and UI dispatch.
-- `src/thermal_palette.*` — shared 256-color lookup table.
-- `src/main_window.*` — live viewer, temperature scale, and screenshots.
+- `src/seek_camera_thread.*` — capture lifecycle, rendering dispatch, and UI delivery.
+- `src/thermal_palette.*` — selectable 256-color palette registry.
+- `src/thermal_renderer.*` — display-range mapping and frame orientation.
+- `src/main_window.*` — live viewer, scale, extrema overlays, controls, and screenshots.
 
 ## Contributing
 
