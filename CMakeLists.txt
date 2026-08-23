@@ -18,6 +18,10 @@ add_executable(
   src/main.cpp
   src/main_window.cpp
   src/main_window.hpp
+  src/thermal_image_widget.cpp
+  src/thermal_image_widget.hpp
+  src/thermal_inspection.cpp
+  src/thermal_inspection.hpp
   src/seek_compact_usb.cpp
   src/seek_compact_usb.hpp
   src/seek_camera_thread.cpp
@@ -55,4 +59,22 @@ if(BUILD_TESTING)
       $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
   )
   add_test(NAME thermal_renderer_test COMMAND thermal_renderer_test)
+
+  add_executable(
+    thermal_inspection_test
+    tests/thermal_inspection_test.cpp
+    src/thermal_inspection.cpp
+  )
+  target_include_directories(
+    thermal_inspection_test
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(thermal_inspection_test PRIVATE Qt6::Widgets)
+  target_compile_options(
+    thermal_inspection_test
+    PRIVATE
+      $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
+  )
+  add_test(NAME thermal_inspection_test COMMAND thermal_inspection_test)
 endif()

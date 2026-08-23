@@ -4,10 +4,13 @@
 #include "thermal_processor.hpp"
 
 #include <exception>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include <QMutexLocker>
 
@@ -15,6 +18,43 @@
 namespace {
 constexpr int kMaxConsecutiveCaptureTimeouts = 3;
 constexpr int kMaxUncalibratedNormalFrames = 30;
+
+class ThermalFramePool final
+    : public std::enable_shared_from_this<ThermalFramePool> {
+public:
+  std::shared_ptr<ThermalFrame> acquire() {
+    std::unique_ptr<ThermalFrame> frame;
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      if (!available_.empty()) {
+        frame = std::move(available_.back());
+        available_.pop_back();
+      }
+    }
+    if (!frame) {
+      frame = std::make_unique<ThermalFrame>();
+    }
+
+    const std::shared_ptr<ThermalFramePool> pool = shared_from_this();
+    return std::shared_ptr<ThermalFrame>(
+        frame.release(), [pool](ThermalFrame* returnedFrame) noexcept {
+          pool->release(returnedFrame);
+        });
+  }
+
+private:
+  void release(ThermalFrame* frame) noexcept {
+    try {
+      std::unique_ptr<ThermalFrame> returnedFrame(frame);
+      const std::lock_guard<std::mutex> lock(mutex_);
+      available_.push_back(std::move(returnedFrame));
+    } catch (...) {
+    }
+  }
+
+  std::mutex mutex_;
+  std::vector<std::unique_ptr<ThermalFrame>> available_;
+};
 }  // namespace
 
 SeekCameraThread::SeekCameraThread(QObject* parent) : QThread(parent) {
@@ -68,7 +108,8 @@ void SeekCameraThread::run() {
 
     std::vector<unsigned char> rawFrame(
         ThermalProcessor::kRawFrameByteCount);
-    ThermalFrame thermalFrame;
+    const auto framePool = std::make_shared<ThermalFramePool>();
+    std::shared_ptr<ThermalFrame> thermalFrame = framePool->acquire();
     int consecutiveCaptureTimeouts = 0;
     int uncalibratedNormalFrames = 0;
     while (!isInterruptionRequested()) {
@@ -83,7 +124,8 @@ void SeekCameraThread::run() {
         continue;
       }
 
-      const bool frameProduced = processor.processFrame(rawFrame, thermalFrame);
+      const bool frameProduced =
+          processor.processFrame(rawFrame, *thermalFrame);
       if (!frameProduced) {
         if (rawFrame[20] == 3 && !processor.isCalibrated() &&
             ++uncalibratedNormalFrames > kMaxUncalibratedNormalFrames) {
@@ -95,9 +137,9 @@ void SeekCameraThread::run() {
       }
 
       uncalibratedNormalFrames = 0;
-      const ThermalRenderResult renderedFrame =
-          renderThermalFrame(thermalFrame, renderSettingsSnapshot());
-      emit frameReady(renderedFrame);
+      emit frameReady(
+          renderThermalFrame(thermalFrame, renderSettingsSnapshot()));
+      thermalFrame = framePool->acquire();
     }
 
     disconnectCamera();

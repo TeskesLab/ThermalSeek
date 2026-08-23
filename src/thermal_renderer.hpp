@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 
 #include <QImage>
@@ -22,6 +23,7 @@ struct ThermalRenderSettings final {
 };
 
 struct ThermalRenderResult final {
+  std::shared_ptr<const ThermalFrame> sourceFrame;
   QImage image;
   TemperatureRange displayRange;
   float minimumCelsius = 0.0F;
@@ -32,6 +34,7 @@ struct ThermalRenderResult final {
 };
 
 ThermalRenderResult renderThermalFrame(
-    const ThermalFrame& frame, const ThermalRenderSettings& settings);
+    std::shared_ptr<const ThermalFrame> frame,
+    const ThermalRenderSettings& settings);
 
 Q_DECLARE_METATYPE(ThermalRenderResult)

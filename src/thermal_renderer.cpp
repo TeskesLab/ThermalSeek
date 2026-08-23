@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <utility>
 
 namespace {
 QPoint detectorPointToImage(std::size_t detectorX, std::size_t detectorY,
@@ -32,8 +33,15 @@ bool isValidTemperatureRange(const TemperatureRange& range) noexcept {
 }
 
 ThermalRenderResult renderThermalFrame(
-    const ThermalFrame& frame, const ThermalRenderSettings& settings) {
+    std::shared_ptr<const ThermalFrame> sourceFrame,
+    const ThermalRenderSettings& settings) {
   ThermalRenderResult result;
+  result.sourceFrame = std::move(sourceFrame);
+  if (!result.sourceFrame) {
+    return result;
+  }
+
+  const ThermalFrame& frame = *result.sourceFrame;
   result.minimumCelsius = frame.minimumCelsius;
   result.maximumCelsius = frame.maximumCelsius;
   result.centerCelsius = frame.centerCelsius;

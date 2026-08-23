@@ -18,8 +18,10 @@ link libseekthermal.
 - Five selectable thermal palettes with a matching temperature scale.
 - Automatic, locked, and manually configured display temperature ranges.
 - Live minimum, maximum, and center readings with hot/cold image markers.
+- Mouse spot readings, pinned measurement points, and ROI statistics.
+- Freeze-frame inspection while camera capture continues in the background.
 - Resizable Qt Widgets interface.
-- Single-key PNG screenshots containing the thermal view, scale, and status.
+- Single-key PNG screenshots containing the thermal view, scale, status, and overlays.
 - Direct libusb transport with deterministic cleanup and timeout handling.
 
 ## Supported cameras
@@ -56,7 +58,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-Run the focused rendering tests with:
+Run the focused display and inspection tests with:
 
 ```sh
 ctest --test-dir build --output-on-failure
@@ -100,9 +102,16 @@ Do not run the desktop application as root.
 | `L` | Lock the currently displayed temperature range |
 | `M` | Configure a manual temperature range |
 | `H` | Toggle the hot and cold image markers |
+| `Space` | Freeze or resume the displayed thermal frame |
+| `Delete` | Clear pinned points and the selected ROI |
 | `G` | Save a screenshot of the ThermalSeek window |
 
-The **Display** menu exposes the same palette, range, and marker controls.
+The **Display** menu exposes the same palette, range, marker, freeze, and clear controls.
+
+Move the mouse over the thermal image for an exact spot reading. Click to pin
+a measurement point; click the same detector pixel again to remove it. Drag
+with the left mouse button to select an ROI with minimum, maximum, average,
+and center temperatures.
 
 Screenshots are written as PNG files to the platform Pictures directory under
 a `ThermalSeek` subdirectory. The filename format is:
@@ -128,20 +137,25 @@ thermal_processor  calibration frames, bad pixels, radiometric conversion
 ThermalFrame       row-major Celsius pixels plus min/max/center and extrema
        |
        v
-thermal_renderer   palette and display-range mapping
+thermal_renderer   palette/range mapping plus shared radiometric frame
        |
        v
-main_window        temperature scale, extrema overlays, controls, screenshots
+thermal_image_widget
+       |             display/detector mapping, spot points, ROI, overlays
+       v
+main_window        temperature scale, controls, status, screenshots
 ```
 
 Important source files:
 
 - `src/seek_compact_usb.*` — direct libusb transport for `289d:0010`.
 - `src/thermal_processor.*` — Seek Compact calibration and thermography.
-- `src/seek_camera_thread.*` — capture lifecycle, rendering dispatch, and UI delivery.
+- `src/seek_camera_thread.*` — capture lifecycle, pooled frame ownership, and UI delivery.
 - `src/thermal_palette.*` — selectable 256-color palette registry.
 - `src/thermal_renderer.*` — display-range mapping and frame orientation.
-- `src/main_window.*` — live viewer, scale, extrema overlays, controls, and screenshots.
+- `src/thermal_inspection.*` — display/detector mapping and radiometric statistics.
+- `src/thermal_image_widget.*` — mouse interaction and measurement overlays.
+- `src/main_window.*` — live viewer, scale, controls, status, and screenshots.
 
 ## Contributing
 

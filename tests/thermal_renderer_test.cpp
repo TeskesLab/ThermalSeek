@@ -2,6 +2,7 @@
 #include "thermal_renderer.hpp"
 
 #include <iostream>
+#include <memory>
 #include <string>
 
 namespace {
@@ -51,7 +52,8 @@ void testPaletteRegistry() {
 void testAutomaticRangeAndMarkerMapping() {
   ThermalRenderSettings settings;
   settings.palette = ThermalPaletteId::WhiteHot;
-  const ThermalRenderResult result = renderThermalFrame(sampleFrame(), settings);
+  const ThermalRenderResult result = renderThermalFrame(
+      std::make_shared<ThermalFrame>(sampleFrame()), settings);
 
   expect(!result.image.isNull(), "valid thermal frame renders an image");
   expect(result.image.size() == QSize(2, 3),
@@ -73,7 +75,8 @@ void testFixedRangeClamping() {
   ThermalRenderSettings settings;
   settings.palette = ThermalPaletteId::WhiteHot;
   settings.fixedRange = TemperatureRange{20.0F, 40.0F};
-  const ThermalRenderResult result = renderThermalFrame(sampleFrame(), settings);
+  const ThermalRenderResult result = renderThermalFrame(
+      std::make_shared<ThermalFrame>(sampleFrame()), settings);
 
   expect(result.displayRange.minimumCelsius == 20.0F &&
              result.displayRange.maximumCelsius == 40.0F,
@@ -91,7 +94,8 @@ void testFixedRangeClamping() {
 void testInvalidFixedRangeFallsBackToAutomatic() {
   ThermalRenderSettings settings;
   settings.fixedRange = TemperatureRange{50.0F, 40.0F};
-  const ThermalRenderResult result = renderThermalFrame(sampleFrame(), settings);
+  const ThermalRenderResult result = renderThermalFrame(
+      std::make_shared<ThermalFrame>(sampleFrame()), settings);
 
   expect(result.displayRange.minimumCelsius == 10.0F &&
              result.displayRange.maximumCelsius == 60.0F,

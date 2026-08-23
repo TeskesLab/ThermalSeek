@@ -1,4 +1,5 @@
 #include "main_window.hpp"
+#include "thermal_image_widget.hpp"
 
 #include "thermal_palette.hpp"
 
@@ -14,7 +15,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
-#include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QKeySequence>
@@ -22,7 +22,6 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
-#include <QPen>
 #include <QPixmap>
 #include <QShortcut>
 #include <QSizePolicy>
@@ -118,124 +117,6 @@ private:
   bool hasRange_ = false;
 };
 
-class ThermalImageWidget final : public QWidget {
-public:
-  explicit ThermalImageWidget(QWidget* parent = nullptr) : QWidget(parent) {
-    setMinimumSize(640, 480);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    message_ = QStringLiteral("Connecting to thermal camera…");
-  }
-
-  void setFrame(const ThermalRenderResult& frame) {
-    image_ = frame.image;
-    coldestPoint_ = frame.coldestPoint;
-    hottestPoint_ = frame.hottestPoint;
-    message_.clear();
-    update();
-  }
-
-  void clearFrame(const QString& message) {
-    image_ = QImage();
-    coldestPoint_ = QPoint(-1, -1);
-    hottestPoint_ = QPoint(-1, -1);
-    message_ = message;
-    update();
-  }
-
-  bool hasFrame() const noexcept {
-    return !image_.isNull();
-  }
-
-  void setMarkersVisible(bool visible) {
-    markersVisible_ = visible;
-    update();
-  }
-
-protected:
-  void paintEvent(QPaintEvent*) override {
-    QPainter painter(this);
-    painter.fillRect(rect(), Qt::black);
-
-    if (image_.isNull()) {
-      painter.setPen(QColor(240, 240, 240));
-      painter.drawText(rect(), Qt::AlignCenter, message_);
-      return;
-    }
-
-    QSize scaledSize = image_.size();
-    scaledSize.scale(size(), Qt::KeepAspectRatio);
-    const QRect targetRect(
-        QPoint((width() - scaledSize.width()) / 2,
-               (height() - scaledSize.height()) / 2),
-        scaledSize);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    painter.drawImage(targetRect, image_);
-
-    if (!markersVisible_) {
-      return;
-    }
-
-    drawMarker(painter, targetRect, coldestPoint_, QStringLiteral("MIN"),
-               QColor(64, 200, 255), QPointF(-50.0, -28.0));
-    drawMarker(painter, targetRect, hottestPoint_, QStringLiteral("MAX"),
-               QColor(255, 80, 48), QPointF(10.0, 10.0));
-  }
-
-private:
-  void drawMarker(QPainter& painter, const QRect& targetRect,
-                  const QPoint& imagePoint, const QString& label,
-                  const QColor& color, const QPointF& labelOffset) const {
-    if (!image_.rect().contains(imagePoint)) {
-      return;
-    }
-
-    const QPointF center(
-        targetRect.left() +
-            (static_cast<qreal>(imagePoint.x()) + 0.5) *
-                static_cast<qreal>(targetRect.width()) / image_.width(),
-        targetRect.top() +
-            (static_cast<qreal>(imagePoint.y()) + 0.5) *
-                static_cast<qreal>(targetRect.height()) / image_.height());
-    const auto drawShape = [&painter, &center]() {
-      painter.drawEllipse(center, 7.0, 7.0);
-      painter.drawLine(center + QPointF(-12.0, 0.0),
-                       center + QPointF(12.0, 0.0));
-      painter.drawLine(center + QPointF(0.0, -12.0),
-                       center + QPointF(0.0, 12.0));
-    };
-
-    painter.setPen(
-        QPen(Qt::black, 5.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    drawShape();
-    painter.setPen(
-        QPen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    drawShape();
-
-    constexpr qreal kLabelWidth = 42.0;
-    constexpr qreal kLabelHeight = 20.0;
-    QRectF labelRect(center + labelOffset, QSizeF(kLabelWidth, kLabelHeight));
-    labelRect.moveLeft(std::clamp(
-        labelRect.left(), 2.0,
-        std::max(2.0, static_cast<qreal>(width()) - kLabelWidth - 2.0)));
-    labelRect.moveTop(std::clamp(
-        labelRect.top(), 2.0,
-        std::max(2.0, static_cast<qreal>(height()) - kLabelHeight - 2.0)));
-
-    painter.fillRect(labelRect, QColor(0, 0, 0, 200));
-    painter.setPen(QPen(color, 1.0));
-    painter.drawRect(labelRect);
-    QFont labelFont = painter.font();
-    labelFont.setBold(true);
-    painter.setFont(labelFont);
-    painter.drawText(labelRect, Qt::AlignCenter, label);
-  }
-
-  QImage image_;
-  QPoint coldestPoint_{-1, -1};
-  QPoint hottestPoint_{-1, -1};
-  QString message_;
-  bool markersVisible_ = true;
-};
 
 namespace {
 QString paletteName(ThermalPaletteId paletteId) {
@@ -337,7 +218,15 @@ MainWindow::~MainWindow() {
 
 
 void MainWindow::displayFrame(const ThermalRenderResult& frame) {
-  imageView_->setFrame(frame);
+  if (frozen_) {
+    return;
+  }
+  presentFrame(frame);
+}
+
+void MainWindow::presentFrame(const ThermalRenderResult& frame) {
+  currentFrame_ = frame;
+  imageView_->setFrame(currentFrame_);
   currentDisplayRange_ = frame.displayRange;
   hasDisplayRange_ = isValidTemperatureRange(currentDisplayRange_);
   if (hasDisplayRange_) {
@@ -346,18 +235,23 @@ void MainWindow::displayFrame(const ThermalRenderResult& frame) {
   } else {
     temperatureScale_->clearRange();
   }
-  showLiveStatus(
-      QStringLiteral(
-          "Live — %1 — Center %2 °C — Min %3 °C — Max %4 °C")
+  currentFrameStatusDetails_ =
+      QStringLiteral("%1 — Center %2 °C — Min %3 °C — Max %4 °C")
           .arg(cameraName_)
           .arg(frame.centerCelsius, 0, 'f', 1)
           .arg(frame.minimumCelsius, 0, 'f', 1)
-          .arg(frame.maximumCelsius, 0, 'f', 1));
+          .arg(frame.maximumCelsius, 0, 'f', 1);
+  updateFrameStatus();
 }
 
 void MainWindow::showCameraConnected(const QString& cameraName) {
   cameraName_ = cameraName;
+  currentFrame_ = ThermalRenderResult{};
+  currentFrameStatusDetails_.clear();
   hasDisplayRange_ = false;
+  frozen_ = false;
+  freezeAction_->setChecked(false);
+  imageView_->setFrozen(false);
   imageView_->clearFrame(QStringLiteral("Calibrating thermal camera…"));
   temperatureScale_->clearRange();
   showLiveStatus(QStringLiteral("Calibrating — %1").arg(cameraName_));
@@ -366,7 +260,12 @@ void MainWindow::showCameraConnected(const QString& cameraName) {
 
 void MainWindow::showCaptureError(const QString& message) {
   cameraName_.clear();
+  currentFrame_ = ThermalRenderResult{};
+  currentFrameStatusDetails_.clear();
   hasDisplayRange_ = false;
+  frozen_ = false;
+  freezeAction_->setChecked(false);
+  imageView_->setFrozen(false);
   imageView_->clearFrame(QStringLiteral("Camera unavailable"));
   temperatureScale_->clearRange();
   transientStatusMessage_.clear();
@@ -511,6 +410,18 @@ void MainWindow::createDisplayMenu() {
   markersAction_->setShortcut(QKeySequence(Qt::Key_H));
   connect(markersAction_, &QAction::toggled, this,
           &MainWindow::setMarkersVisible);
+
+  displayMenu->addSeparator();
+  freezeAction_ = displayMenu->addAction(QStringLiteral("&Freeze Frame"));
+  freezeAction_->setCheckable(true);
+  freezeAction_->setShortcut(QKeySequence(Qt::Key_Space));
+  connect(freezeAction_, &QAction::triggered, this, &MainWindow::setFrozen);
+
+  auto* clearMeasurementsAction =
+      displayMenu->addAction(QStringLiteral("&Clear Measurements"));
+  clearMeasurementsAction->setShortcut(QKeySequence(Qt::Key_Delete));
+  connect(clearMeasurementsAction, &QAction::triggered, this,
+          &MainWindow::clearMeasurements);
 }
 
 void MainWindow::selectPalette(ThermalPaletteId paletteId) {
@@ -599,15 +510,49 @@ void MainWindow::setMarkersVisible(bool visible) {
                           : QStringLiteral("Hot/cold markers hidden"));
 }
 
+void MainWindow::setFrozen(bool frozen) {
+  if (frozen && !imageView_->hasFrame()) {
+    freezeAction_->setChecked(false);
+    showTransientStatus(
+        QStringLiteral("Cannot freeze before a frame is available"));
+    return;
+  }
+
+  frozen_ = frozen;
+  imageView_->setFrozen(frozen_);
+  updateFrameStatus();
+  showTransientStatus(frozen_ ? QStringLiteral("Frame frozen")
+                              : QStringLiteral("Live capture resumed"));
+}
+
+void MainWindow::clearMeasurements() {
+  imageView_->clearMeasurements();
+  showTransientStatus(QStringLiteral("Measurements cleared"));
+}
+
 void MainWindow::applyRenderSettings() {
   ThermalRenderSettings settings;
   settings.palette = selectedPalette_;
   settings.fixedRange = fixedRange_;
   cameraThread_.setRenderSettings(settings);
+
+  if (frozen_ && currentFrame_.sourceFrame) {
+    presentFrame(renderThermalFrame(currentFrame_.sourceFrame, settings));
+  }
 }
 
 void MainWindow::updateRangeActionChecks() {
   automaticRangeAction_->setChecked(rangeMode_ == RangeMode::Automatic);
   lockedRangeAction_->setChecked(rangeMode_ == RangeMode::Locked);
   manualRangeAction_->setChecked(rangeMode_ == RangeMode::Manual);
+}
+
+void MainWindow::updateFrameStatus() {
+  if (currentFrameStatusDetails_.isEmpty()) {
+    return;
+  }
+  showLiveStatus(
+      QStringLiteral("%1 — %2")
+          .arg(frozen_ ? QStringLiteral("Frozen") : QStringLiteral("Live"))
+          .arg(currentFrameStatusDetails_));
 }

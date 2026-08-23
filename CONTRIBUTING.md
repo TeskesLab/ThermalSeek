@@ -21,7 +21,7 @@ must build without new warnings.
 
 ## Project boundaries
 
-The current implementation has six distinct responsibilities:
+The current implementation has eight distinct responsibilities:
 
 1. `seek_compact_usb.*` owns Seek Compact discovery, USB controls, and raw
    frame transport.
@@ -30,10 +30,12 @@ The current implementation has six distinct responsibilities:
 3. `ThermalFrame` is the common radiometric output.
 4. `thermal_renderer.*` owns palette selection, display ranges, orientation,
    and conversion to a display image.
-5. `seek_camera_thread.*` owns the worker-thread lifecycle and dispatches
-   rendered frames to Qt.
-6. `main_window.*` owns presentation controls, extrema overlays, status, and
-   screenshots.
+5. `thermal_inspection.*` owns display/detector mapping and point/ROI
+   statistics against original Celsius pixels.
+6. `seek_camera_thread.*` owns the worker lifecycle, pooled immutable frame
+   ownership, rendering, and dispatch to Qt.
+7. `thermal_image_widget.*` owns mouse interaction and measurement overlays.
+8. `main_window.*` owns presentation controls, status, and screenshots.
 
 Despite its current name, `ThermalProcessor` is Seek Compact-specific. Do not
 put another camera's frame layout, calibration branches, or USB commands into
@@ -98,6 +100,7 @@ A new processor must produce `ThermalFrame` using these invariants:
 - Displayable pixels are finite Celsius values.
 - `minimumCelsius` and `maximumCelsius` are the actual frame extrema.
 - `centerCelsius` is the deterministic center detector sample.
+- Extrema coordinates identify the pixels represented by the extrema values.
 
 Raw detector values must not be labeled as temperatures. If a camera needs
 factory calibration, shutter frames, gain maps, bad-pixel repair, emissivity
