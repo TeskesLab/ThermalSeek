@@ -32,7 +32,7 @@ class SeekCompactUsb final {
   SeekCompactUsb(SeekCompactUsb&&) = delete;
   SeekCompactUsb& operator=(SeekCompactUsb&&) = delete;
 
-  void connect();
+  void connect(std::uint8_t bus, std::uint8_t address);
   void initialize(std::vector<unsigned char>& factoryData,
                   std::vector<unsigned char>& deviceInfo);
   void readFrame(std::vector<unsigned char>& frame);

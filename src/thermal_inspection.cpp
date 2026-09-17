@@ -18,13 +18,19 @@ bool hasValidDimensions(const ThermalFrame& frame) noexcept {
 }
 
 std::optional<QPoint> imagePointToDetector(
-    const ThermalFrame& frame, const QPoint& imagePoint) noexcept {
-  if (!hasValidDimensions(frame) || imagePoint.x() < 0 || imagePoint.y() < 0 ||
-      imagePoint.x() >= static_cast<int>(frame.height) ||
-      imagePoint.y() >= static_cast<int>(frame.width)) {
+    const ThermalFrame& frame, const QPoint& imagePoint,
+    ThermalOrientation orientation) noexcept {
+  if (!hasValidDimensions(frame) || imagePoint.x() < 0 || imagePoint.y() < 0) {
     return std::nullopt;
   }
-
+  const bool native = orientation == ThermalOrientation::Native;
+  if (imagePoint.x() >= static_cast<int>(native ? frame.width : frame.height) ||
+      imagePoint.y() >= static_cast<int>(native ? frame.height : frame.width)) {
+    return std::nullopt;
+  }
+  if (native) {
+    return imagePoint;
+  }
   return QPoint(static_cast<int>(frame.width) - 1 - imagePoint.y(),
                 imagePoint.x());
 }
@@ -56,9 +62,10 @@ std::optional<QPoint> mapWidgetPointToImage(
 }
 
 std::optional<ThermalPointMeasurement> measureThermalPoint(
-    const ThermalFrame& frame, const QPoint& imagePoint) noexcept {
+    const ThermalFrame& frame, const QPoint& imagePoint,
+    ThermalOrientation orientation) noexcept {
   const std::optional<QPoint> detectorPoint =
-      imagePointToDetector(frame, imagePoint);
+      imagePointToDetector(frame, imagePoint, orientation);
   if (!detectorPoint.has_value()) {
     return std::nullopt;
   }
@@ -75,13 +82,16 @@ std::optional<ThermalPointMeasurement> measureThermalPoint(
 }
 
 std::optional<ThermalRegionStatistics> measureThermalRegion(
-    const ThermalFrame& frame, const QRect& imageRegion) noexcept {
+    const ThermalFrame& frame, const QRect& imageRegion,
+    ThermalOrientation orientation) noexcept {
   if (!hasValidDimensions(frame)) {
     return std::nullopt;
   }
 
-  const QRect imageBounds(0, 0, static_cast<int>(frame.height),
-                          static_cast<int>(frame.width));
+  const bool native = orientation == ThermalOrientation::Native;
+  const QRect imageBounds(0, 0,
+                          static_cast<int>(native ? frame.width : frame.height),
+                          static_cast<int>(native ? frame.height : frame.width));
   const QRect region = imageRegion.normalized().intersected(imageBounds);
   if (region.isEmpty()) {
     return std::nullopt;
@@ -94,24 +104,37 @@ std::optional<ThermalRegionStatistics> measureThermalRegion(
   statistics.centerCelsius = std::numeric_limits<float>::quiet_NaN();
   double sum = 0.0;
 
-  for (int imageY = region.top(); imageY <= region.bottom(); ++imageY) {
-    for (int imageX = region.left(); imageX <= region.right(); ++imageX) {
-      const QPoint imagePoint(imageX, imageY);
-      const std::optional<ThermalPointMeasurement> measurement =
-          measureThermalPoint(frame, imagePoint);
-      if (!measurement.has_value()) {
-        continue;
+  const auto accumulate = [&](float celsius, const QPoint& imagePoint) {
+    if (!std::isfinite(celsius)) {
+      return;
+    }
+    sum += celsius;
+    ++statistics.sampleCount;
+    if (celsius < statistics.minimumCelsius) {
+      statistics.minimumCelsius = celsius;
+      statistics.coldestImagePoint = imagePoint;
+    }
+    if (celsius > statistics.maximumCelsius) {
+      statistics.maximumCelsius = celsius;
+      statistics.hottestImagePoint = imagePoint;
+    }
+  };
+  if (native) {
+    for (int imageY = region.top(); imageY <= region.bottom(); ++imageY) {
+      const float* row =
+          frame.celsius.data() + static_cast<std::size_t>(imageY) * frame.width;
+      for (int imageX = region.left(); imageX <= region.right(); ++imageX) {
+        accumulate(row[imageX], QPoint(imageX, imageY));
       }
-
-      sum += measurement->celsius;
-      ++statistics.sampleCount;
-      if (measurement->celsius < statistics.minimumCelsius) {
-        statistics.minimumCelsius = measurement->celsius;
-        statistics.coldestImagePoint = imagePoint;
-      }
-      if (measurement->celsius > statistics.maximumCelsius) {
-        statistics.maximumCelsius = measurement->celsius;
-        statistics.hottestImagePoint = imagePoint;
+    }
+  } else {
+    for (int imageY = region.top(); imageY <= region.bottom(); ++imageY) {
+      const std::size_t detectorX =
+          frame.width - 1 - static_cast<std::size_t>(imageY);
+      for (int imageX = region.left(); imageX <= region.right(); ++imageX) {
+        const std::size_t detectorY = static_cast<std::size_t>(imageX);
+        accumulate(frame.celsius[detectorY * frame.width + detectorX],
+                   QPoint(imageX, imageY));
       }
     }
   }
@@ -125,7 +148,7 @@ std::optional<ThermalRegionStatistics> measureThermalRegion(
   const QPoint centerPoint(region.left() + region.width() / 2,
                            region.top() + region.height() / 2);
   const std::optional<ThermalPointMeasurement> center =
-      measureThermalPoint(frame, centerPoint);
+      measureThermalPoint(frame, centerPoint, orientation);
   if (center.has_value()) {
     statistics.centerCelsius = center->celsius;
   }

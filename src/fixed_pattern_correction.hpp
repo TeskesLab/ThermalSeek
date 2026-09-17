@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "thermal_processor.hpp"
+#include "thermal_frame.hpp"
 
 using CameraFingerprint = std::array<std::uint8_t, 32>;
 

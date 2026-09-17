@@ -96,7 +96,8 @@ void ThermalImageWidget::paintEvent(QPaintEvent*) {
 
   for (std::size_t index = 0; index < pinnedPoints_.size(); ++index) {
     const std::optional<ThermalPointMeasurement> measurement =
-        measureThermalPoint(*frame_.measurementFrame, pinnedPoints_[index]);
+        measureThermalPoint(*frame_.measurementFrame, pinnedPoints_[index],
+                            frame_.orientation);
     if (!measurement.has_value()) {
       continue;
     }
@@ -110,7 +111,8 @@ void ThermalImageWidget::paintEvent(QPaintEvent*) {
 
   if (cursorPoint_.has_value()) {
     const std::optional<ThermalPointMeasurement> measurement =
-        measureThermalPoint(*frame_.measurementFrame, *cursorPoint_);
+        measureThermalPoint(*frame_.measurementFrame, *cursorPoint_,
+                            frame_.orientation);
     if (measurement.has_value()) {
       drawMarker(painter, targetRect, *cursorPoint_,
                  QStringLiteral("%1 °C").arg(measurement->celsius, 0, 'f', 1),
@@ -271,7 +273,8 @@ void ThermalImageWidget::drawRegion(QPainter& painter, const QRect& targetRect,
     return;
   }
   const std::optional<ThermalRegionStatistics> statistics =
-      measureThermalRegion(*frame_.measurementFrame, imageRegion);
+      measureThermalRegion(*frame_.measurementFrame, imageRegion,
+                           frame_.orientation);
   if (!statistics.has_value()) {
     return;
   }

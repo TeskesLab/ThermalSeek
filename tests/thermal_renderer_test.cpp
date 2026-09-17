@@ -1,3 +1,4 @@
+#include "thermal_inspection.hpp"
 #include "thermal_palette.hpp"
 #include "thermal_renderer.hpp"
 
@@ -72,6 +73,58 @@ void testAutomaticRangeAndMarkerMapping() {
          "automatic range maps minimum to palette start");
   expect(result.image.pixel(1, 0) == qRgb(255, 255, 255),
          "automatic range maps maximum to palette end");
+}
+
+void testNativeRenderingAndMeasurementsAgree() {
+  ThermalRenderSettings settings;
+  settings.palette = ThermalPaletteId::WhiteHot;
+  settings.orientation = ThermalOrientation::Native;
+  const auto frame = std::make_shared<ThermalFrame>(sampleFrame());
+  const ThermalRenderResult result = renderThermalFrame(frame, frame, settings);
+  expect(result.image.size() == QSize(3, 2),
+         "native non-square frame keeps detector image dimensions");
+  if (result.image.size() != QSize(3, 2) || !result.measurementFrame) {
+    return;
+  }
+  expect(result.coldestPoint == QPoint(0, 0) &&
+             result.hottestPoint == QPoint(2, 1),
+         "native extrema retain their detector coordinates");
+  const auto cold = measureThermalPoint(
+      *result.measurementFrame, result.coldestPoint, result.orientation);
+  const auto hot = measureThermalPoint(
+      *result.measurementFrame, result.hottestPoint, result.orientation);
+  expect(cold.has_value() && cold->celsius == result.minimumCelsius &&
+             hot.has_value() && hot->celsius == result.maximumCelsius,
+         "displayed native extrema agree with spot measurements");
+  for (int y = 0; y < result.image.height(); ++y) {
+    for (int x = 0; x < result.image.width(); ++x) {
+      const auto point = measureThermalPoint(
+          *result.measurementFrame, QPoint(x, y), result.orientation);
+      const int expectedGray = (y * 3 + x) * 51;
+      expect(point.has_value() && point->detectorPoint == QPoint(x, y) &&
+                 point->celsius == 10.0F * (y * 3 + x + 1) &&
+                 result.image.pixel(x, y) ==
+                     qRgb(expectedGray, expectedGray, expectedGray),
+             "native rendered pixels and temperatures share one coordinate system");
+    }
+  }
+  const auto region = measureThermalRegion(
+      *result.measurementFrame, QRect(0, 0, 3, 2), result.orientation);
+  expect(region.has_value() && region->sampleCount == 6 &&
+             region->minimumCelsius == result.minimumCelsius &&
+             region->maximumCelsius == result.maximumCelsius &&
+             region->coldestImagePoint == result.coldestPoint &&
+             region->hottestImagePoint == result.hottestPoint &&
+             region->averageCelsius == 35.0F && region->centerCelsius == 50.0F,
+         "native ROI temperatures and extrema agree with the rendered frame");
+  const auto rightColumn = measureThermalRegion(
+      *result.measurementFrame, QRect(2, 0, 1, 2), result.orientation);
+  expect(rightColumn.has_value() && rightColumn->sampleCount == 2 &&
+             rightColumn->minimumCelsius == 30.0F &&
+             rightColumn->maximumCelsius == 60.0F &&
+             rightColumn->averageCelsius == 45.0F &&
+             rightColumn->hottestImagePoint == result.hottestPoint,
+         "native ROI uses the unrotated right edge of a non-square frame");
 }
 
 void testFixedRangeClamping() {
@@ -164,6 +217,7 @@ void testFixedPatternSourceIsPreserved() {
 int main() {
   testPaletteRegistry();
   testAutomaticRangeAndMarkerMapping();
+  testNativeRenderingAndMeasurementsAgree();
   testFixedRangeClamping();
   testInvalidFixedRangeFallsBackToAutomatic();
   testRadiometricCorrectionDrivesRendering();

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "thermal_processor.hpp"
+#include "thermal_frame.hpp"
 
 struct RadiometricSettings final {
   float emissivity = 1.0F;

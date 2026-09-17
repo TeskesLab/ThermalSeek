@@ -8,7 +8,7 @@
 #include <QRect>
 #include <QSize>
 
-#include "thermal_processor.hpp"
+#include "thermal_frame.hpp"
 
 struct ThermalPointMeasurement final {
   QPoint imagePoint;
@@ -31,6 +31,8 @@ std::optional<QPoint> mapWidgetPointToImage(
     const QPointF& widgetPoint, const QRect& imageTarget,
     const QSize& imageSize) noexcept;
 std::optional<ThermalPointMeasurement> measureThermalPoint(
-    const ThermalFrame& frame, const QPoint& imagePoint) noexcept;
+    const ThermalFrame& frame, const QPoint& imagePoint,
+    ThermalOrientation orientation) noexcept;
 std::optional<ThermalRegionStatistics> measureThermalRegion(
-    const ThermalFrame& frame, const QRect& imageRegion) noexcept;
+    const ThermalFrame& frame, const QRect& imageRegion,
+    ThermalOrientation orientation) noexcept;

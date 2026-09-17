@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <optional>
 
 #include <QAction>
@@ -296,6 +297,7 @@ MainWindow::MainWindow(QWidget *parent)
           &MainWindow::cancelFixedPatternCalibration);
   updateRadiometricStatus(radiometricSettings_);
   updateFixedPatternStatus();
+  createCameraMenu();
   createDisplayMenu();
   createMeasurementMenu();
   updateFixedPatternActions();
@@ -304,25 +306,10 @@ MainWindow::MainWindow(QWidget *parent)
           &MainWindow::saveScreenshot);
   showLiveStatus(QStringLiteral("Discovering USB cameras…"));
 
-  connect(&cameraThread_, &SeekCameraThread::cameraConnected, this,
-          &MainWindow::showCameraConnected, Qt::QueuedConnection);
-  connect(&cameraThread_, &SeekCameraThread::frameReady, this,
-          &MainWindow::displayFrame, Qt::QueuedConnection);
-  connect(&cameraThread_, &SeekCameraThread::captureFailed, this,
-          &MainWindow::showCaptureError, Qt::QueuedConnection);
-  connect(&cameraThread_, &SeekCameraThread::fixedPatternProfileStateChanged,
-          this, &MainWindow::updateFixedPatternProfileState,
-          Qt::QueuedConnection);
-  connect(&cameraThread_, &SeekCameraThread::fixedPatternCalibrationProgress,
-          this, &MainWindow::updateFixedPatternCalibrationProgress,
-          Qt::QueuedConnection);
-  connect(&cameraThread_, &SeekCameraThread::fixedPatternCalibrationFinished,
-          this, &MainWindow::finishFixedPatternCalibration,
-          Qt::QueuedConnection);
 
   applyRenderSettings();
   cameraThread_.setFixedPatternEnabled(fixedPatternEnabled_);
-  cameraThread_.start();
+  QTimer::singleShot(0, this, &MainWindow::rescanCameras);
 }
 
 MainWindow::~MainWindow() {
@@ -364,52 +351,53 @@ void MainWindow::presentFrame(const ThermalRenderResult &frame) {
   updateFrameStatus();
 }
 
-void MainWindow::showCameraConnected(const QString &cameraName) {
+void MainWindow::showCameraConnected(const QString &cameraName,
+                                     bool fixedPatternSupported) {
   cameraName_ = cameraName;
-  currentFrame_ = ThermalRenderResult{};
-  currentFrameStatusDetails_.clear();
-  hasDisplayRange_ = false;
-  cameraReady_ = false;
-  fixedPatternProfileAvailable_ = false;
-  fixedPatternActive_ = false;
-  fixedPatternCalibrationRunning_ = false;
-  fixedPatternProfileOperationPending_ = false;
-  fixedPatternProgressDialog_->reset();
-  fixedPatternProgressDialog_->hide();
-  frozen_ = false;
-  freezeAction_->setChecked(false);
-  imageView_->setFrozen(false);
-  imageView_->clearFrame(QStringLiteral("Calibrating thermal camera…"));
-  temperatureScale_->clearRange();
-  updateRadiometricStatus(radiometricSettings_);
+  fixedPatternSupported_ = fixedPatternSupported;
+  imageView_->clearFrame(QStringLiteral("Waiting for thermal frames…"));
   updateFixedPatternActions();
   updateFixedPatternStatus();
-  showLiveStatus(QStringLiteral("Calibrating — %1").arg(cameraName_));
+  showLiveStatus(QStringLiteral("Connected — %1 — waiting for frames")
+                     .arg(cameraName_));
   qInfo().noquote() << "Connected to" << cameraName_;
 }
 
-void MainWindow::showCaptureError(const QString &message) {
+void MainWindow::resetCameraView(const QString &message) {
   cameraName_.clear();
   currentFrame_ = ThermalRenderResult{};
   currentFrameStatusDetails_.clear();
   hasDisplayRange_ = false;
   cameraReady_ = false;
+  fixedPatternSupported_ = false;
   fixedPatternProfileAvailable_ = false;
   fixedPatternActive_ = false;
   fixedPatternCalibrationRunning_ = false;
   fixedPatternProfileOperationPending_ = false;
+  fixedPatternCalibrationFrames_ = 0;
+  fixedPatternCalibrationTargetFrames_ = 0;
+  fixedPatternCalibrationShutters_ = 0;
   fixedPatternProgressDialog_->reset();
   fixedPatternProgressDialog_->hide();
   frozen_ = false;
   freezeAction_->setChecked(false);
   imageView_->setFrozen(false);
-  imageView_->clearFrame(QStringLiteral("Camera unavailable"));
+  imageView_->clearMeasurements();
+  imageView_->clearFrame(message);
   temperatureScale_->clearRange();
   updateRadiometricStatus(radiometricSettings_);
   updateFixedPatternActions();
   updateFixedPatternStatus();
   transientStatusMessage_.clear();
   showLiveStatus(message);
+}
+
+void MainWindow::showCaptureError(const QString &message) {
+  ++cameraGeneration_;
+  disconnect(&cameraThread_, nullptr, this, nullptr);
+  resetCameraView(
+      QStringLiteral("%1\nUse Camera → Reconnect or Rescan Cameras (F5).")
+          .arg(message));
   qWarning().noquote() << "Camera capture failed:" << message;
 }
 
@@ -480,6 +468,142 @@ void MainWindow::showTransientStatus(const QString &message) {
     transientStatusMessage_.clear();
     statusBar()->showMessage(liveStatusMessage_);
   });
+}
+
+void MainWindow::createCameraMenu() {
+  auto *cameraMenu = menuBar()->addMenu(QStringLiteral("&Camera"));
+  cameraDevicesMenu_ = cameraMenu->addMenu(QStringLiteral("&Select Camera"));
+  cameraActionGroup_ = new QActionGroup(this);
+  cameraActionGroup_->setExclusionPolicy(
+      QActionGroup::ExclusionPolicy::Exclusive);
+  cameraMenu->addSeparator();
+  auto *rescanAction =
+      cameraMenu->addAction(QStringLiteral("&Rescan Cameras"));
+  rescanAction->setShortcut(QKeySequence(Qt::Key_F5));
+  connect(rescanAction, &QAction::triggered, this, &MainWindow::rescanCameras);
+  reconnectCameraAction_ =
+      cameraMenu->addAction(QStringLiteral("Rec&onnect Selected Camera"));
+  reconnectCameraAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+R")));
+  reconnectCameraAction_->setEnabled(false);
+  connect(reconnectCameraAction_, &QAction::triggered, this, [this] {
+    if (selectedCamera_) {
+      selectCamera(*selectedCamera_);
+    }
+  });
+}
+
+void MainWindow::rescanCameras() {
+  std::vector<CameraDevice> cameras;
+  try {
+    cameras = discoverCameras();
+  } catch (const std::exception &error) {
+    ++cameraGeneration_;
+    disconnect(&cameraThread_, nullptr, this, nullptr);
+    cameraThread_.stop();
+    cameraDevicesMenu_->clear();
+    auto *action = cameraDevicesMenu_->addAction(
+        QStringLiteral("Camera discovery failed"));
+    action->setEnabled(false);
+    resetCameraView(
+        QStringLiteral("Camera discovery failed: %1\n"
+                       "Check USB connections and permissions, then press F5.")
+            .arg(QString::fromUtf8(error.what())));
+    return;
+  }
+
+  cameraDevicesMenu_->clear();
+  for (const auto &device : cameras) {
+    QString label = QString::fromStdString(device.name);
+    label.replace(QStringLiteral("&"), QStringLiteral("&&"));
+    auto *action = cameraDevicesMenu_->addAction(label);
+    action->setCheckable(true);
+    action->setData(QString::fromStdString(device.id));
+    action->setChecked(selectedCamera_ && selectedCamera_->id == device.id);
+    cameraActionGroup_->addAction(action);
+    connect(action, &QAction::triggered, this,
+            [this, device] { selectCamera(device); });
+  }
+
+  if (cameras.empty()) {
+    ++cameraGeneration_;
+    disconnect(&cameraThread_, nullptr, this, nullptr);
+    cameraThread_.stop();
+    auto *action =
+        cameraDevicesMenu_->addAction(QStringLiteral("No supported cameras"));
+    action->setEnabled(false);
+    resetCameraView(
+        QStringLiteral("No supported camera found.\n"
+                       "Connect a Seek Compact or Mileseey TR256i, "
+                       "check USB permissions, then press F5."));
+    return;
+  }
+
+  const auto selected = std::find_if(
+      cameras.begin(), cameras.end(), [this](const CameraDevice &device) {
+        return selectedCamera_ && selectedCamera_->id == device.id;
+      });
+  if (selected == cameras.end() || !cameraThread_.isRunning() ||
+      cameraName_.isEmpty()) {
+    selectCamera(selected == cameras.end() ? cameras.front() : *selected);
+  } else {
+    showTransientStatus(QStringLiteral("Camera list refreshed"));
+  }
+}
+
+void MainWindow::selectCamera(const CameraDevice &device) {
+  // A disconnected queued callback still owns its old generation. Invalidate
+  // those callbacks before stopping, then connect only after the worker exits.
+  const quint64 generation = ++cameraGeneration_;
+  disconnect(&cameraThread_, nullptr, this, nullptr);
+  cameraThread_.stop();
+  selectedCamera_ = device;
+  reconnectCameraAction_->setEnabled(true);
+  for (QAction *action : cameraActionGroup_->actions()) {
+    action->setChecked(action->data().toString() ==
+                       QString::fromStdString(device.id));
+  }
+  resetCameraView(QStringLiteral("Opening %1…")
+                      .arg(QString::fromStdString(device.name)));
+
+  connect(&cameraThread_, &CameraThread::cameraConnected, this,
+          [this, generation](const QString &name, bool supported) {
+            if (generation == cameraGeneration_) {
+              showCameraConnected(name, supported);
+            }
+          }, Qt::QueuedConnection);
+  connect(&cameraThread_, &CameraThread::frameReady, this,
+          [this, generation](const ThermalRenderResult &frame) {
+            if (generation == cameraGeneration_) {
+              displayFrame(frame);
+            }
+          }, Qt::QueuedConnection);
+  connect(&cameraThread_, &CameraThread::captureFailed, this,
+          [this, generation](const QString &message) {
+            if (generation == cameraGeneration_) {
+              showCaptureError(message);
+            }
+          }, Qt::QueuedConnection);
+  connect(&cameraThread_, &CameraThread::fixedPatternProfileStateChanged, this,
+          [this, generation](bool available, bool active,
+                             const QString &message) {
+            if (generation == cameraGeneration_) {
+              updateFixedPatternProfileState(available, active, message);
+            }
+          }, Qt::QueuedConnection);
+  connect(&cameraThread_, &CameraThread::fixedPatternCalibrationProgress, this,
+          [this, generation](int frames, int target, int shutters) {
+            if (generation == cameraGeneration_) {
+              updateFixedPatternCalibrationProgress(frames, target, shutters);
+            }
+          }, Qt::QueuedConnection);
+  connect(&cameraThread_, &CameraThread::fixedPatternCalibrationFinished, this,
+          [this, generation](bool success, bool canceled,
+                             const QString &message) {
+            if (generation == cameraGeneration_) {
+              finishFixedPatternCalibration(success, canceled, message);
+            }
+          }, Qt::QueuedConnection);
+  cameraThread_.startCamera(device);
 }
 
 void MainWindow::createDisplayMenu() {
@@ -561,6 +685,7 @@ void MainWindow::createDisplayMenu() {
 
 void MainWindow::createMeasurementMenu() {
   auto *measurementMenu = menuBar()->addMenu(QStringLiteral("&Measurement"));
+  measurementMenu->setToolTipsVisible(true);
   auto *radiometricSettingsAction =
       measurementMenu->addAction(QStringLiteral("&Radiometric Settings…"));
   radiometricSettingsAction->setShortcut(QKeySequence(Qt::Key_R));
@@ -604,12 +729,19 @@ void MainWindow::configureRadiometry() {
 }
 
 void MainWindow::beginFixedPatternCalibration() {
+  if (!fixedPatternSupported_) {
+    showTransientStatus(
+        QStringLiteral("Learned fixed-pattern correction is unavailable "
+                       "for this camera"));
+    return;
+  }
   if (!cameraReady_ || fixedPatternCalibrationRunning_) {
     showTransientStatus(
         QStringLiteral("A live thermal frame is required for calibration"));
     return;
   }
 
+  const quint64 generation = cameraGeneration_;
   const QMessageBox::StandardButton response = QMessageBox::question(
       this, QStringLiteral("Calibrate Fixed-Pattern Correction"),
       QStringLiteral(
@@ -619,7 +751,8 @@ void MainWindow::beginFixedPatternCalibration() {
           "Thermal capture will continue while ThermalSeek collects 96 "
           "usable frames spanning at least four shutter refreshes."),
       QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
-  if (response != QMessageBox::Ok) {
+  if (response != QMessageBox::Ok || generation != cameraGeneration_ ||
+      !cameraReady_ || !fixedPatternSupported_) {
     return;
   }
 
@@ -663,9 +796,10 @@ void MainWindow::cancelFixedPatternCalibration() {
 }
 
 void MainWindow::setFixedPatternEnabled(bool enabled) {
-  if (!fixedPatternProfileAvailable_) {
+  if (!fixedPatternSupported_ || !fixedPatternProfileAvailable_) {
     const QSignalBlocker blocker(fixedPatternEnabledAction_);
-    fixedPatternEnabledAction_->setChecked(fixedPatternEnabled_);
+    fixedPatternEnabledAction_->setChecked(fixedPatternSupported_ &&
+                                            fixedPatternEnabled_);
     return;
   }
   if (frozen_) {
@@ -681,9 +815,11 @@ void MainWindow::setFixedPatternEnabled(bool enabled) {
 }
 
 void MainWindow::deleteFixedPatternProfile() {
-  if (!fixedPatternProfileAvailable_ || fixedPatternProfileOperationPending_) {
+  if (!fixedPatternSupported_ || !fixedPatternProfileAvailable_ ||
+      fixedPatternProfileOperationPending_) {
     return;
   }
+  const quint64 generation = cameraGeneration_;
   const QMessageBox::StandardButton response = QMessageBox::question(
       this, QStringLiteral("Delete Fixed-Pattern Profile"),
       QStringLiteral(
@@ -691,7 +827,8 @@ void MainWindow::deleteFixedPatternProfile() {
           "Fixed-pattern correction will remain unavailable until the "
           "camera is recalibrated."),
       QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
-  if (response != QMessageBox::Yes) {
+  if (response != QMessageBox::Yes || generation != cameraGeneration_ ||
+      !fixedPatternSupported_ || !fixedPatternProfileAvailable_) {
     return;
   }
 
@@ -706,6 +843,9 @@ void MainWindow::deleteFixedPatternProfile() {
 
 void MainWindow::updateFixedPatternProfileState(bool available, bool active,
                                                 const QString &message) {
+  if (!fixedPatternSupported_) {
+    return;
+  }
   fixedPatternProfileAvailable_ = available;
   fixedPatternActive_ = active;
   fixedPatternProfileOperationPending_ = false;
@@ -878,6 +1018,7 @@ void MainWindow::applyRenderSettings() {
   settings.palette = selectedPalette_;
   settings.fixedRange = fixedRange_;
   settings.radiometry = radiometricSettings_;
+  settings.orientation = currentFrame_.orientation;
   cameraThread_.setRenderSettings(settings);
 
   if (currentFrame_.cameraFrame && currentFrame_.apparentFrame) {
@@ -1003,17 +1144,42 @@ void MainWindow::updateFixedPatternActions() {
   if (freezeAction_ != nullptr) {
     freezeAction_->setEnabled(!fixedPatternCalibrationRunning_);
   }
-  fixedPatternCalibrationAction_->setEnabled(cameraReady_ && operationIdle);
+  const bool supported = cameraReady_ && fixedPatternSupported_;
+  fixedPatternCalibrationAction_->setEnabled(supported && operationIdle);
   fixedPatternEnabledAction_->setEnabled(
-      cameraReady_ && fixedPatternProfileAvailable_ && operationIdle);
+      supported && fixedPatternProfileAvailable_ && operationIdle);
   fixedPatternDeleteAction_->setEnabled(
-      cameraReady_ && fixedPatternProfileAvailable_ && operationIdle);
+      supported && fixedPatternProfileAvailable_ && operationIdle);
+  const QString tooltip =
+      fixedPatternSupported_
+          ? QStringLiteral("Learned detector fixed-pattern correction")
+          : cameraName_.isEmpty()
+                ? QStringLiteral("Connect a supported camera first")
+                : QStringLiteral("Learned fixed-pattern correction is "
+                                 "unavailable for this camera");
+  for (QAction *action : {fixedPatternCalibrationAction_,
+                          fixedPatternEnabledAction_,
+                          fixedPatternDeleteAction_}) {
+    action->setToolTip(tooltip);
+    action->setStatusTip(tooltip);
+  }
   const QSignalBlocker blocker(fixedPatternEnabledAction_);
-  fixedPatternEnabledAction_->setChecked(fixedPatternEnabled_);
+  fixedPatternEnabledAction_->setChecked(fixedPatternSupported_ &&
+                                         fixedPatternEnabled_);
 }
 
 void MainWindow::updateFixedPatternStatus() {
-  if (fixedPatternCalibrationRunning_) {
+  if (cameraName_.isEmpty()) {
+    fixedPatternStatusLabel_->setText(QStringLiteral("FPN —"));
+    fixedPatternStatusLabel_->setToolTip(
+        QStringLiteral("Connect a camera to check fixed-pattern support"));
+  } else if (!fixedPatternSupported_) {
+    fixedPatternStatusLabel_->setText(QStringLiteral("FPN Unavailable"));
+    fixedPatternStatusLabel_->setToolTip(
+        QStringLiteral("Learned fixed-pattern correction is unavailable for %1. "
+                       "Live temperature measurement remains available.")
+            .arg(cameraName_));
+  } else if (fixedPatternCalibrationRunning_) {
     const int percent = fixedPatternCalibrationPercent(
         fixedPatternCalibrationFrames_, fixedPatternCalibrationTargetFrames_,
         fixedPatternCalibrationShutters_);

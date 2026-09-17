@@ -21,38 +21,48 @@ must build without new warnings.
 
 ## Project boundaries
 
-The current implementation has eleven distinct responsibilities:
+The implementation separates these responsibilities:
 
-1. `seek_compact_usb.*` owns Seek Compact discovery, USB controls, and raw
+1. `camera_session.*` owns discovery, selection, backend creation, and
+   per-session dimensions, orientation, and learned-FPN capability.
+2. `seek_compact_usb.*` owns selected-device Seek Compact USB controls and raw
    frame transport.
-2. `thermal_processor.*` owns Seek Compact calibration and apparent-temperature
+3. `thermal_processor.*` owns Seek Compact calibration and apparent-temperature
    conversion.
-3. `ThermalFrame` is the common immutable Celsius-field contract.
-4. `fixed_pattern_correction.*` owns covered-lens profile training,
+4. `tr256i_camera.*` owns TR256i V4L2 capture and temporary USB emissivity controls.
+5. `tr256i_decoder.*` owns its temperature-plane decoding and validation.
+6. `thermal_frame.hpp` defines the common immutable Celsius-field contract.
+7. `fixed_pattern_correction.*` owns covered-lens profile training,
    validation, and detector-bias subtraction.
-5. `fixed_pattern_profile_store.*` owns camera fingerprinting and atomic,
+8. `fixed_pattern_profile_store.*` owns camera fingerprinting and atomic,
    checksummed profile persistence.
-6. `radiometric_correction.*` owns emissivity/reflected-background
+9. `radiometric_correction.*` owns emissivity/reflected-background
    compensation and recalculation of measurement statistics.
-7. `thermal_renderer.*` owns palette selection, display ranges, orientation,
-   and conversion of the corrected field to a display image.
-8. `thermal_inspection.*` owns display/detector mapping and point/ROI
-   statistics against the corrected measurement field.
-9. `seek_camera_thread.*` owns the worker lifecycle, pooled immutable frame
-   ownership, profile lifecycle, rendering, and dispatch to Qt.
-10. `thermal_image_widget.*` owns mouse interaction and measurement overlays.
-11. `main_window.*` owns measurement and presentation controls, persistent
-    settings, status, and screenshots.
+10. `thermal_renderer.*` owns palette selection, display ranges, orientation,
+    and conversion of the corrected field to a display image.
+11. `thermal_inspection.*` owns display/detector mapping and point/ROI
+    statistics against the corrected measurement field.
+12. `camera_thread.*` owns the worker lifecycle, pooled immutable frame
+    ownership, profile lifecycle, rendering, and dispatch to Qt.
+13. `thermal_image_widget.*` owns mouse interaction and measurement overlays.
+14. `main_window.*` owns camera selection, measurement and presentation controls,
+    persistent settings, status, and screenshots.
 
 Despite its current name, `ThermalProcessor` is Seek Compact-specific. Do not
 put another camera's frame layout, calibration branches, or USB commands into
 that class.
 
-The first contribution adding another backend should also introduce the
-smallest common camera-session boundary needed to select exactly one supported
-camera and produce `ThermalFrame` objects. Migrate the existing Seek Compact
-path to that boundary in the same change. Avoid compatibility shims and avoid
-scattering VID/PID checks through the UI or processing code.
+New backends implement `CameraSession` and produce native-coordinate
+`ThermalFrame` objects. `CameraFrameStatus` distinguishes usable frames,
+calibration/control frames, verified shutter refreshes, and recoverable timeouts.
+Keep reads bounded so the worker can stop. Carry the session's orientation into
+both rendering and point/ROI mapping; Seek uses counterclockwise rotation,
+whereas TR256i uses native landscape orientation.
+
+An absent `fixedPatternFingerprint` means learned FPN is unsupported, not that
+it should use a placeholder identity. Do not synthesize shutter events from
+commands or elapsed time. Model-specific readiness/control completion belongs
+in the backend; avoid compatibility shims and VID/PID branches in the UI.
 
 ## Before implementing a camera
 
@@ -119,6 +129,10 @@ Radiometric correction is a separate, camera-independent measurement stage:
   frame rather than allocating or copying in the capture hot path.
 - The corrected field must drive rendering, automatic range selection,
   extrema, spot readings, and ROI statistics consistently.
+- If the camera already compensates for object emissivity, establish and verify
+  an apparent-temperature mode before applying the host correction. Restore
+  temporary camera settings on close; do not overwrite optical compensation
+  or persist changes to flash merely to normalize the host pipeline.
 
 For apparent and reflected temperatures expressed in Kelvin, the implemented
 measurement model is:

@@ -4,14 +4,17 @@
 #include <QString>
 #include <QThread>
 
+#include "camera_session.hpp"
 #include "thermal_renderer.hpp"
 
-class SeekCameraThread final : public QThread {
+class CameraThread final : public QThread {
   Q_OBJECT
 
 public:
-  explicit SeekCameraThread(QObject *parent = nullptr);
-  ~SeekCameraThread() override;
+  explicit CameraThread(QObject *parent = nullptr);
+  ~CameraThread() override;
+
+  void startCamera(const CameraDevice &device);
 
   void setRenderSettings(const ThermalRenderSettings &settings);
   void setFixedPatternEnabled(bool enabled);
@@ -21,7 +24,7 @@ public:
   void stop();
 
 signals:
-  void cameraConnected(const QString &cameraName);
+  void cameraConnected(const QString &cameraName, bool fixedPatternSupported);
   void frameReady(const ThermalRenderResult &frame);
   void captureFailed(const QString &message);
   void fixedPatternProfileStateChanged(bool available, bool active,
@@ -44,6 +47,8 @@ private:
 
   ThermalRenderSettings renderSettingsSnapshot() const;
   FixedPatternCommands takeFixedPatternCommands();
+
+  CameraDevice device_;
 
   mutable QMutex renderSettingsMutex_;
   ThermalRenderSettings renderSettings_;

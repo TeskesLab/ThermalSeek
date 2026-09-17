@@ -1,9 +1,6 @@
-#include "seek_camera_thread.hpp"
+#include "camera_thread.hpp"
 #include "fixed_pattern_correction.hpp"
 #include "fixed_pattern_profile_store.hpp"
-#include "seek_compact_usb.hpp"
-
-#include "thermal_processor.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -19,16 +16,6 @@
 
 namespace {
 constexpr int kMaxConsecutiveCaptureTimeouts = 3;
-constexpr int kMaxUncalibratedNormalFrames = 30;
-
-std::uint16_t rawFrameType(const std::vector<unsigned char> &rawFrame) {
-  if (rawFrame.size() <= 21) {
-    throw std::runtime_error("Camera returned an incomplete frame header");
-  }
-  return static_cast<std::uint16_t>(
-      static_cast<std::uint16_t>(rawFrame[20]) |
-      (static_cast<std::uint16_t>(rawFrame[21]) << 8U));
-}
 
 QString calibrationSummary(const FixedPatternProfile &profile) {
   return QStringLiteral(
@@ -78,44 +65,56 @@ private:
 };
 } // namespace
 
-SeekCameraThread::SeekCameraThread(QObject *parent) : QThread(parent) {
+CameraThread::CameraThread(QObject *parent) : QThread(parent) {
   qRegisterMetaType<ThermalRenderResult>();
 }
 
-SeekCameraThread::~SeekCameraThread() { stop(); }
+CameraThread::~CameraThread() { stop(); }
 
-void SeekCameraThread::setRenderSettings(
+void CameraThread::startCamera(const CameraDevice &device) {
+  stop();
+  device_ = device;
+  {
+    const QMutexLocker locker(&fixedPatternMutex_);
+    fixedPatternCalibrationRequested_ = false;
+    fixedPatternCalibrationCancellationRequested_ = false;
+    fixedPatternProfileDeletionRequested_ = false;
+  }
+  start();
+}
+
+void CameraThread::setRenderSettings(
     const ThermalRenderSettings &settings) {
   const QMutexLocker locker(&renderSettingsMutex_);
   renderSettings_ = settings;
 }
 
-void SeekCameraThread::setFixedPatternEnabled(bool enabled) {
+void CameraThread::setFixedPatternEnabled(bool enabled) {
   const QMutexLocker locker(&fixedPatternMutex_);
   fixedPatternEnabled_ = enabled;
 }
 
-void SeekCameraThread::requestFixedPatternCalibration() {
+void CameraThread::requestFixedPatternCalibration() {
   const QMutexLocker locker(&fixedPatternMutex_);
   fixedPatternCalibrationRequested_ = true;
   fixedPatternCalibrationCancellationRequested_ = false;
 }
 
-void SeekCameraThread::cancelFixedPatternCalibration() {
+void CameraThread::cancelFixedPatternCalibration() {
   const QMutexLocker locker(&fixedPatternMutex_);
   fixedPatternCalibrationRequested_ = false;
   fixedPatternCalibrationCancellationRequested_ = true;
 }
 
-void SeekCameraThread::requestFixedPatternProfileDeletion() {
+void CameraThread::requestFixedPatternProfileDeletion() {
   const QMutexLocker locker(&fixedPatternMutex_);
   fixedPatternCalibrationRequested_ = false;
   fixedPatternCalibrationCancellationRequested_ = false;
   fixedPatternProfileDeletionRequested_ = true;
 }
 
-SeekCameraThread::FixedPatternCommands
-SeekCameraThread::takeFixedPatternCommands() {
+CameraThread::FixedPatternCommands
+CameraThread::takeFixedPatternCommands() {
   const QMutexLocker locker(&fixedPatternMutex_);
   FixedPatternCommands commands;
   commands.enabled = fixedPatternEnabled_;
@@ -128,50 +127,40 @@ SeekCameraThread::takeFixedPatternCommands() {
   return commands;
 }
 
-ThermalRenderSettings SeekCameraThread::renderSettingsSnapshot() const {
+ThermalRenderSettings CameraThread::renderSettingsSnapshot() const {
   const QMutexLocker locker(&renderSettingsMutex_);
   return renderSettings_;
 }
 
-void SeekCameraThread::stop() {
+void CameraThread::stop() {
   requestInterruption();
   wait();
 }
 
-void SeekCameraThread::run() {
-  std::optional<SeekCompactUsb> camera;
-  bool connected = false;
-
-  const auto disconnectCamera = [&camera, &connected]() noexcept {
-    if (!connected || !camera.has_value()) {
-      return;
-    }
-
-    camera->disconnect();
-    connected = false;
-  };
+void CameraThread::run() {
+  std::unique_ptr<CameraSession> camera;
 
   try {
-    camera.emplace();
-    camera->connect();
-    connected = true;
-
-    std::vector<unsigned char> factoryData;
-    std::vector<unsigned char> deviceInfo;
-    camera->initialize(factoryData, deviceInfo);
-    ThermalProcessor processor(factoryData, deviceInfo);
-
-    const CameraFingerprint cameraFingerprint =
-        computeCameraFingerprint(factoryData, deviceInfo);
-    const QString profilePath = fixedPatternProfilePath(cameraFingerprint);
+    camera = openCameraSession(device_);
+    const CameraSessionInfo &info = camera->info();
+    const std::optional<CameraFingerprint> &cameraFingerprint =
+        info.fixedPatternFingerprint;
+    const QString profilePath = cameraFingerprint
+                                    ? fixedPatternProfilePath(*cameraFingerprint)
+                                    : QString{};
     std::optional<FixedPatternProfile> fixedPatternProfile;
     QString initialProfileMessage;
-    FixedPatternProfileLoadResult profileLoad =
-        loadFixedPatternProfile(profilePath, cameraFingerprint);
+    FixedPatternProfileLoadResult profileLoad;
+    if (cameraFingerprint) {
+      profileLoad = loadFixedPatternProfile(profilePath, *cameraFingerprint);
+    } else {
+      initialProfileMessage = QStringLiteral(
+          "Learned fixed-pattern correction is unavailable for this camera.");
+    }
     if (profileLoad.status == FixedPatternProfileLoadStatus::Loaded &&
         profileLoad.profile.has_value()) {
-      if (profileLoad.profile->width == ThermalProcessor::kDetectorWidth &&
-          profileLoad.profile->height == ThermalProcessor::kDetectorHeight) {
+      if (profileLoad.profile->width == info.width &&
+          profileLoad.profile->height == info.height) {
         fixedPatternProfile = std::move(*profileLoad.profile);
       } else {
         initialProfileMessage = QStringLiteral(
@@ -184,29 +173,25 @@ void SeekCameraThread::run() {
               .arg(profileLoad.error);
     }
 
-    emit cameraConnected(QString::fromStdString(camera->name()));
+    emit cameraConnected(QString::fromStdString(info.name),
+                         cameraFingerprint.has_value());
 
-    std::vector<unsigned char> rawFrame(ThermalProcessor::kRawFrameByteCount);
     const auto framePool = std::make_shared<ThermalFramePool>();
     std::shared_ptr<ThermalFrame> thermalFrame = framePool->acquire();
     std::optional<FixedPatternCalibrator> fixedPatternCalibrator;
     bool fixedPatternEnabled = true;
     bool initialProfileStatePending = true;
     int consecutiveCaptureTimeouts = 0;
-    int uncalibratedNormalFrames = 0;
     while (!isInterruptionRequested()) {
-      try {
-        camera->readFrame(rawFrame);
-        consecutiveCaptureTimeouts = 0;
-      } catch (const SeekCompactUsbError &error) {
-        if (!error.isTimeout() ||
-            ++consecutiveCaptureTimeouts > kMaxConsecutiveCaptureTimeouts) {
-          throw;
+      const CameraFrameStatus frameStatus = camera->readFrame(*thermalFrame);
+      if (frameStatus == CameraFrameStatus::Timeout) {
+        if (++consecutiveCaptureTimeouts > kMaxConsecutiveCaptureTimeouts) {
+          throw std::runtime_error("Camera capture timed out repeatedly");
         }
         continue;
       }
+      consecutiveCaptureTimeouts = 0;
 
-      const std::uint16_t frameType = rawFrameType(rawFrame);
       const FixedPatternCommands commands = takeFixedPatternCommands();
       const bool enabledChanged = fixedPatternEnabled != commands.enabled;
       fixedPatternEnabled = commands.enabled;
@@ -216,7 +201,7 @@ void SeekCameraThread::run() {
           initialProfileStatePending ? initialProfileMessage : QString{};
       initialProfileStatePending = false;
 
-      if (commands.deleteProfile) {
+      if (commands.deleteProfile && cameraFingerprint) {
         if (fixedPatternCalibrator.has_value()) {
           fixedPatternCalibrator.reset();
           emit fixedPatternCalibrationFinished(
@@ -244,7 +229,8 @@ void SeekCameraThread::run() {
               false, true,
               QStringLiteral("Fixed-pattern calibration canceled."));
         }
-        if (commands.startCalibration && !commands.cancelCalibration) {
+        if (commands.startCalibration && !commands.cancelCalibration &&
+            cameraFingerprint) {
           fixedPatternCalibrator.emplace();
           emit fixedPatternCalibrationProgress(
               0, static_cast<int>(kFixedPatternCalibrationFrameCount), 0);
@@ -259,7 +245,7 @@ void SeekCameraThread::run() {
       }
 
       if (fixedPatternCalibrator.has_value() &&
-          (frameType == 1 || frameType == 8)) {
+          frameStatus == CameraFrameStatus::Shutter) {
         fixedPatternCalibrator->noteShutterFrame();
         emit fixedPatternCalibrationProgress(
             static_cast<int>(fixedPatternCalibrator->frameCount()),
@@ -267,18 +253,9 @@ void SeekCameraThread::run() {
             static_cast<int>(fixedPatternCalibrator->shutterCount()));
       }
 
-      const bool frameProduced =
-          processor.processFrame(rawFrame, *thermalFrame);
-      if (!frameProduced) {
-        if (frameType == 3 && !processor.isCalibrated() &&
-            ++uncalibratedNormalFrames > kMaxUncalibratedNormalFrames) {
-          throw std::runtime_error("Camera calibration stream is incomplete: " +
-                                   processor.missingCalibration());
-        }
+      if (frameStatus != CameraFrameStatus::Ready) {
         continue;
       }
-
-      uncalibratedNormalFrames = 0;
       if (fixedPatternCalibrator.has_value()) {
         if (fixedPatternCalibrator->frameCount() <
             kFixedPatternCalibrationFrameCount) {
@@ -291,7 +268,7 @@ void SeekCameraThread::run() {
 
         if (fixedPatternCalibrator->isComplete()) {
           FixedPatternCalibrationResult calibrationResult =
-              fixedPatternCalibrator->finalize(cameraFingerprint);
+              fixedPatternCalibrator->finalize(*cameraFingerprint);
           fixedPatternCalibrator.reset();
           if (!calibrationResult.profile.has_value()) {
             emit fixedPatternCalibrationFinished(
@@ -317,7 +294,8 @@ void SeekCameraThread::run() {
         }
       }
 
-      const ThermalRenderSettings renderSettings = renderSettingsSnapshot();
+      ThermalRenderSettings renderSettings = renderSettingsSnapshot();
+      renderSettings.orientation = info.orientation;
       std::shared_ptr<const ThermalFrame> cameraFrame = thermalFrame;
       std::shared_ptr<const ThermalFrame> apparentFrame = cameraFrame;
       if (fixedPatternEnabled && fixedPatternProfile.has_value()) {
@@ -337,14 +315,14 @@ void SeekCameraThread::run() {
       thermalFrame = framePool->acquire();
     }
 
-    disconnectCamera();
+    camera.reset();
   } catch (const std::exception &error) {
-    disconnectCamera();
+    camera.reset();
     if (!isInterruptionRequested()) {
       emit captureFailed(QString::fromUtf8(error.what()));
     }
   } catch (...) {
-    disconnectCamera();
+    camera.reset();
     if (!isInterruptionRequested()) {
       emit captureFailed(QStringLiteral("Unknown camera capture error"));
     }

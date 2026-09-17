@@ -8,7 +8,11 @@
 
 namespace {
 QPoint detectorPointToImage(std::size_t detectorX, std::size_t detectorY,
-                            std::size_t detectorWidth) noexcept {
+                            std::size_t detectorWidth,
+                            ThermalOrientation orientation) noexcept {
+  if (orientation == ThermalOrientation::Native) {
+    return QPoint(static_cast<int>(detectorX), static_cast<int>(detectorY));
+  }
   return QPoint(static_cast<int>(detectorY),
                 static_cast<int>(detectorWidth - 1 - detectorX));
 }
@@ -42,6 +46,7 @@ renderThermalFrame(std::shared_ptr<const ThermalFrame> cameraFrame,
   result.cameraFrame = std::move(cameraFrame);
   result.apparentFrame = std::move(apparentFrame);
   result.radiometricSettings = settings.radiometry;
+  result.orientation = settings.orientation;
   result.fixedPatternApplied =
       result.cameraFrame && result.apparentFrame &&
       result.cameraFrame.get() != result.apparentFrame.get();
@@ -74,19 +79,23 @@ renderThermalFrame(std::shared_ptr<const ThermalFrame> cameraFrame,
           ? *settings.fixedRange
           : TemperatureRange{frame.minimumCelsius, frame.maximumCelsius};
 
-  result.image = QImage(static_cast<int>(frame.height),
-                        static_cast<int>(frame.width), QImage::Format_RGB32);
+  const bool native = settings.orientation == ThermalOrientation::Native;
+  result.image = QImage(static_cast<int>(native ? frame.width : frame.height),
+                        static_cast<int>(native ? frame.height : frame.width),
+                        QImage::Format_RGB32);
   if (result.image.isNull()) {
     return result;
   }
 
   if (frame.minimumX < frame.width && frame.minimumY < frame.height) {
     result.coldestPoint =
-        detectorPointToImage(frame.minimumX, frame.minimumY, frame.width);
+        detectorPointToImage(frame.minimumX, frame.minimumY, frame.width,
+                             settings.orientation);
   }
   if (frame.maximumX < frame.width && frame.maximumY < frame.height) {
     result.hottestPoint =
-        detectorPointToImage(frame.maximumX, frame.maximumY, frame.width);
+        detectorPointToImage(frame.maximumX, frame.maximumY, frame.width,
+                             settings.orientation);
   }
 
   const auto &palette = thermalPalette(settings.palette);
@@ -97,21 +106,34 @@ renderThermalFrame(std::shared_ptr<const ThermalFrame> cameraFrame,
 
   const float span =
       result.displayRange.maximumCelsius - result.displayRange.minimumCelsius;
-  for (std::size_t detectorX = 0; detectorX < frame.width; ++detectorX) {
-    auto *destination = reinterpret_cast<QRgb *>(
-        result.image.scanLine(static_cast<int>(frame.width - 1 - detectorX)));
+  const auto colorForTemperature = [&](float temperature) {
+    float normalized = 0.0F;
+    if (std::isfinite(temperature)) {
+      normalized = std::clamp(
+          (temperature - result.displayRange.minimumCelsius) / span, 0.0F,
+          1.0F);
+    }
+    const std::size_t paletteIndex =
+        static_cast<std::size_t>(std::lround(normalized * 255.0F));
+    return palette[paletteIndex];
+  };
+  if (native) {
     for (std::size_t detectorY = 0; detectorY < frame.height; ++detectorY) {
-      const float temperature =
-          frame.celsius[detectorY * frame.width + detectorX];
-      float normalized = 0.0F;
-      if (std::isfinite(temperature)) {
-        normalized = std::clamp(
-            (temperature - result.displayRange.minimumCelsius) / span, 0.0F,
-            1.0F);
+      auto *destination = reinterpret_cast<QRgb *>(
+          result.image.scanLine(static_cast<int>(detectorY)));
+      const float *source = frame.celsius.data() + detectorY * frame.width;
+      for (std::size_t detectorX = 0; detectorX < frame.width; ++detectorX) {
+        destination[detectorX] = colorForTemperature(source[detectorX]);
       }
-      const std::size_t paletteIndex =
-          static_cast<std::size_t>(std::lround(normalized * 255.0F));
-      destination[detectorY] = palette[paletteIndex];
+    }
+  } else {
+    for (std::size_t detectorX = 0; detectorX < frame.width; ++detectorX) {
+      auto *destination = reinterpret_cast<QRgb *>(
+          result.image.scanLine(static_cast<int>(frame.width - 1 - detectorX)));
+      for (std::size_t detectorY = 0; detectorY < frame.height; ++detectorY) {
+        destination[detectorY] =
+            colorForTemperature(frame.celsius[detectorY * frame.width + detectorX]);
+      }
     }
   }
 

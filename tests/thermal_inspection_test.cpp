@@ -1,6 +1,7 @@
 #include "thermal_inspection.hpp"
 
 #include <iostream>
+#include <limits>
 #include <string>
 
 namespace {
@@ -42,24 +43,27 @@ void testWidgetToImageMapping() {
 
 void testPointMeasurementsUseDetectorOrientation() {
   const ThermalFrame frame = sampleFrame();
-  const auto cold = measureThermalPoint(frame, QPoint(0, 2));
+  const auto cold = measureThermalPoint(
+      frame, QPoint(0, 2), ThermalOrientation::CounterClockwise);
   expect(cold.has_value() && cold->detectorPoint == QPoint(0, 0) &&
              cold->celsius == 10.0F,
          "rotated cold point maps back to detector coordinates");
 
-  const auto hot = measureThermalPoint(frame, QPoint(1, 0));
+  const auto hot = measureThermalPoint(
+      frame, QPoint(1, 0), ThermalOrientation::CounterClockwise);
   expect(hot.has_value() && hot->detectorPoint == QPoint(2, 1) &&
              hot->celsius == 60.0F,
          "rotated hot point maps back to detector coordinates");
 
-  expect(!measureThermalPoint(frame, QPoint(2, 0)).has_value(),
+  expect(!measureThermalPoint(frame, QPoint(2, 0),
+                             ThermalOrientation::CounterClockwise).has_value(),
          "point outside rendered width is rejected");
 }
 
 void testRegionStatistics() {
   const ThermalFrame frame = sampleFrame();
-  const auto statistics =
-      measureThermalRegion(frame, QRect(0, 0, 2, 2));
+  const auto statistics = measureThermalRegion(
+      frame, QRect(0, 0, 2, 2), ThermalOrientation::CounterClockwise);
 
   expect(statistics.has_value(), "valid image region produces statistics");
   if (!statistics.has_value()) {
@@ -80,12 +84,35 @@ void testRegionStatistics() {
   expect(statistics->centerCelsius == 50.0F,
          "region center uses the selected center pixel");
 }
+
+void testNativeRegionClippingAndInvalidSamples() {
+  ThermalFrame frame = sampleFrame();
+  frame.celsius[4] = std::numeric_limits<float>::quiet_NaN();
+  expect(!measureThermalPoint(frame, QPoint(0, 2), ThermalOrientation::Native)
+              .has_value() &&
+             !measureThermalPoint(frame, QPoint(3, 0), ThermalOrientation::Native)
+                  .has_value(),
+         "native point bounds use detector width and height");
+  const auto region = measureThermalRegion(
+      frame, QRect(1, 0, 4, 4), ThermalOrientation::Native);
+  expect(region.has_value() && region->imageRegion == QRect(1, 0, 2, 2) &&
+             region->sampleCount == 3 &&
+             region->minimumCelsius == 20.0F &&
+             region->maximumCelsius == 60.0F &&
+             region->averageCelsius == 110.0F / 3.0F &&
+             region->hottestImagePoint == QPoint(2, 1),
+         "native ROI clips to image bounds and skips non-finite samples");
+  expect(!measureThermalRegion(frame, QRect(1, 1, 1, 1),
+                              ThermalOrientation::Native).has_value(),
+         "ROI containing only invalid temperatures is rejected");
+}
 }  // namespace
 
 int main() {
   testWidgetToImageMapping();
   testPointMeasurementsUseDetectorOrientation();
   testRegionStatistics();
+  testNativeRegionClippingAndInvalidSamples();
 
   if (failures != 0) {
     std::cerr << failures << " inspection test(s) failed\n";

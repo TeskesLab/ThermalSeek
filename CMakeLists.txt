@@ -16,6 +16,10 @@ pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 add_executable(
   thermalseek
   src/main.cpp
+  src/camera_session.cpp
+  src/camera_session.hpp
+  src/camera_thread.cpp
+  src/camera_thread.hpp
   src/fixed_pattern_correction.cpp
   src/fixed_pattern_correction.hpp
   src/fixed_pattern_profile_store.cpp
@@ -30,14 +34,17 @@ add_executable(
   src/radiometric_correction.hpp
   src/seek_compact_usb.cpp
   src/seek_compact_usb.hpp
-  src/seek_camera_thread.cpp
-  src/seek_camera_thread.hpp
   src/thermal_palette.cpp
   src/thermal_palette.hpp
   src/thermal_renderer.cpp
   src/thermal_renderer.hpp
   src/thermal_processor.cpp
   src/thermal_processor.hpp
+  src/thermal_frame.hpp
+  src/tr256i_camera.cpp
+  src/tr256i_camera.hpp
+  src/tr256i_decoder.cpp
+  src/tr256i_decoder.hpp
 )
 target_link_libraries(thermalseek PRIVATE Qt6::Widgets PkgConfig::LIBUSB)
 target_compile_options(
@@ -47,6 +54,23 @@ target_compile_options(
 )
 
 if(BUILD_TESTING)
+  add_executable(
+    tr256i_decoder_test
+    tests/tr256i_decoder_test.cpp
+    src/tr256i_decoder.cpp
+  )
+  target_include_directories(
+    tr256i_decoder_test
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_options(
+    tr256i_decoder_test
+    PRIVATE
+      $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
+  )
+  add_test(NAME tr256i_decoder_test COMMAND tr256i_decoder_test)
+
   add_executable(
     radiometric_correction_test
     tests/radiometric_correction_test.cpp
@@ -92,6 +116,7 @@ if(BUILD_TESTING)
     src/thermal_palette.cpp
     src/radiometric_correction.cpp
     src/thermal_renderer.cpp
+    src/thermal_inspection.cpp
   )
   target_include_directories(
     thermal_renderer_test

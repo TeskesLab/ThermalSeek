@@ -5,11 +5,12 @@
 #include <QMainWindow>
 #include <QString>
 
-#include "seek_camera_thread.hpp"
+#include "camera_thread.hpp"
 
 class QAction;
 class QActionGroup;
 class QLabel;
+class QMenu;
 class QProgressDialog;
 class TemperatureScaleWidget;
 class ThermalImageWidget;
@@ -28,11 +29,16 @@ private:
 
   void displayFrame(const ThermalRenderResult &frame);
   void presentFrame(const ThermalRenderResult &frame);
-  void showCameraConnected(const QString &cameraName);
+  void showCameraConnected(const QString &cameraName, bool fixedPatternSupported);
   void showCaptureError(const QString &message);
   void saveScreenshot();
   void showLiveStatus(const QString &message);
   void showTransientStatus(const QString &message);
+
+  void createCameraMenu();
+  void rescanCameras();
+  void selectCamera(const CameraDevice &device);
+  void resetCameraView(const QString &message);
 
   void createDisplayMenu();
   void createMeasurementMenu();
@@ -70,7 +76,9 @@ private:
   QLabel *radiometricStatusLabel_;
   QLabel *fixedPatternStatusLabel_;
   QProgressDialog *fixedPatternProgressDialog_;
-  SeekCameraThread cameraThread_;
+  CameraThread cameraThread_;
+  quint64 cameraGeneration_ = 0;
+  std::optional<CameraDevice> selectedCamera_;
   ThermalPaletteId selectedPalette_ = ThermalPaletteId::Inferno;
   RangeMode rangeMode_ = RangeMode::Automatic;
   std::optional<TemperatureRange> fixedRange_;
@@ -82,6 +90,7 @@ private:
   bool markersVisible_ = true;
   bool frozen_ = false;
   bool cameraReady_ = false;
+  bool fixedPatternSupported_ = false;
   bool fixedPatternProfileAvailable_ = false;
   bool fixedPatternActive_ = false;
   bool fixedPatternCalibrationRunning_ = false;
@@ -90,6 +99,9 @@ private:
   int fixedPatternCalibrationTargetFrames_ = 0;
   int fixedPatternCalibrationShutters_ = 0;
 
+  QMenu *cameraDevicesMenu_ = nullptr;
+  QActionGroup *cameraActionGroup_ = nullptr;
+  QAction *reconnectCameraAction_ = nullptr;
   QActionGroup *paletteActionGroup_ = nullptr;
   QAction *automaticRangeAction_ = nullptr;
   QAction *lockedRangeAction_ = nullptr;

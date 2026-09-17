@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 constexpr std::uint16_t kSeekVendorId = 0x289d;
@@ -22,6 +24,8 @@ constexpr unsigned char kFrameEndpoint = 0x81;
 constexpr unsigned int kTransferTimeoutMilliseconds = 5000;
 constexpr int kDeinitializeCommandCount = 3;
 constexpr std::size_t kFactoryChunkSize = 64;
+constexpr auto kFactoryChunkInterval = std::chrono::milliseconds(10);
+constexpr auto kStopSettlingInterval = std::chrono::milliseconds(300);
 
 constexpr std::uint8_t kVendorInterfaceOut =
     LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
@@ -94,7 +98,7 @@ SeekCompactUsb::~SeekCompactUsb() {
   libusb_exit(context_);
 }
 
-void SeekCompactUsb::connect() {
+void SeekCompactUsb::connect(std::uint8_t bus, std::uint8_t address) {
   if (handle_ != nullptr) {
     throw std::logic_error("Seek Compact camera is already connected");
   }
@@ -117,7 +121,9 @@ void SeekCompactUsb::connect() {
       continue;
     }
     if (descriptor.idVendor != kSeekVendorId ||
-        descriptor.idProduct != kSeekCompactProductId) {
+        descriptor.idProduct != kSeekCompactProductId ||
+        libusb_get_bus_number(devices[index]) != bus ||
+        libusb_get_device_address(devices[index]) != address) {
       continue;
     }
 
@@ -132,7 +138,7 @@ void SeekCompactUsb::connect() {
 
   if (openedHandle == nullptr) {
     if (!foundSupportedDevice) {
-      throw std::runtime_error("No supported Seek Thermal camera was found");
+      throw std::runtime_error("The selected Seek Compact camera is no longer connected");
     }
     throw SeekCompactUsbError("Opening Seek Compact camera", openError);
   }
@@ -242,6 +248,8 @@ void SeekCompactUsb::initialize(std::vector<unsigned char>& factoryData,
                selection.data(), selection.size());
     controlIn(static_cast<std::uint8_t>(Request::factoryData),
               factoryData.data() + offset, count);
+    // Match the Android factory-read sequence's 10 ms inter-chunk pacing.
+    std::this_thread::sleep_for(kFactoryChunkInterval);
   }
 
   std::array<unsigned char, 2> deviceInfoSelection{21, 0};
@@ -310,6 +318,8 @@ void SeekCompactUsb::disconnect() noexcept {
   }
 
   deinitialize();
+  // Match the Android stop sequence's pause before tearing down the session.
+  std::this_thread::sleep_for(kStopSettlingInterval);
   if (interfaceClaimed_) {
     libusb_release_interface(handle_, kInterface);
     interfaceClaimed_ = false;
